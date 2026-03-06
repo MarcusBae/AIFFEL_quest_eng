@@ -1,191 +1,221 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import os
-import torch
+# GPT-1 기반 한국어 챗봇 프로젝트 (Decoder-only)
+# 이 파일은 GPTChat.ipynb 노트북 내용을 바탕으로 생성된 실행 스크립트입니다.
+
+import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+import os
+import re
+import random
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
-from torch.utils.data import TensorDataset, DataLoader, random_split
 from pecab import PeCab
+import math
+import urllib.request
+import pickle
 import warnings
+warnings.filterwarnings('ignore')
 
-# 프로젝트 내부 모듈 임포트
-from models import GPTModel
-from utils import (
-    load_data, build_corpus, load_word2vec, augment_data, 
-    tokenize_and_vectorize_gpt, tokenize_and_vectorize_pretrain,
-    pad_sequences, generate_gpt_masks, 
-    loss_function, LearningRateScheduler, preprocess_sentence
-)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
-# 불필요한 경고 메시지 무시
-warnings.filterwarnings(action='ignore')
+# --- 2. 데이터 전처리 ---
 
-def train_model(model, train_loader, val_loader, optimizer, lr_scheduler, device, epochs, stage_name, total_step_start=0):
-    """
-    모델 학습 및 검증을 수행하는 공통 함수
-    """
-    print(f"\n>>> Starting Stage: {stage_name}")
-    total_step = total_step_start
-    train_losses, val_losses = [], []
+def preprocess_sentence(sentence):
+    sentence = sentence.lower()
+    sentence = re.sub(r"[^a-zA-Z가-힣0-9!?,.]", " ", sentence)
+    sentence = re.sub(r" {2,}", " ", sentence)
+    sentence = sentence.strip()
+    return sentence
 
-    for epoch in range(epochs):
-        # 학습 단계
-        model.train()
-        current_train_loss = 0.0
-        for (batch,) in tqdm(train_loader, desc=f"{stage_name} Epoch {epoch+1} [train]"):
-            batch = batch.to(device)
-            x, y = batch[:, :-1], batch[:, 1:]
-            mask = generate_gpt_masks(x, device)
+def load_data(path='data/ChatbotData.csv'):
+    if not os.path.exists(path):
+        url = 'https://raw.githubusercontent.com/songys/Chatbot_data/master/ChatbotData.csv'
+        os.makedirs('data', exist_ok=True)
+        urllib.request.urlretrieve(url, path)
+    df = pd.read_csv(path)
+    return df['Q'].tolist(), df['A'].tolist()
 
-            optimizer.param_groups[0]["lr"] = lr_scheduler(total_step)
-            optimizer.zero_grad()
-            pred = model(x, mask)
-            loss = loss_function(y, pred)
-            loss.backward()
-            optimizer.step()
-            current_train_loss += loss.item()
-            total_step += 1
+questions, answers = load_data()
+pecab = PeCab()
+
+# Pre-train용 코퍼스 구성 (질문 데이터 위주)
+que_corpus = [pecab.morphs(preprocess_sentence(q)) for q in questions]
+
+vocab = {"<pad>": 0, "<unk>": 1, "<start>": 2, "<end>": 3, "<sep>": 4}
+for tokens in que_corpus:
+    for word in tokens:
+        if word not in vocab: vocab[word] = len(vocab)
+
+print(f"Vocab Size: {len(vocab)}")
+
+# --- 3. GPT 모델 구성 ---
+
+def positional_encoding(pos, d_model):
+    def cal_angle(position, i):
+        return position / np.power(10000, (2*(i//2)) / np.float32(d_model))
+    def get_posi_angle_vec(position):
+        return [cal_angle(position, i) for i in range(d_model)]
+    sinusoid_table = np.array([get_posi_angle_vec(pos_i) for pos_i in range(pos)])
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])
+    return sinusoid_table
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads):
+        super().__init__()
+        self.num_heads, self.d_model = num_heads, d_model
+        self.depth = d_model // num_heads
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.linear = nn.Linear(d_model, d_model)
+
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
+        d_k = Q.size(-1)
+        QK = torch.matmul(Q, K.transpose(-1, -2))
+        scaled_qk = QK / math.sqrt(d_k)
+        if mask is not None: scaled_qk += (mask * -1e9)
+        attentions = F.softmax(scaled_qk, dim=-1)
+        return torch.matmul(attentions, V), attentions
+
+    def forward(self, Q, K, V, mask=None):
+        bsz = Q.size(0)
+        WQ, WK, WV = self.W_q(Q), self.W_k(K), self.W_v(V)
         
-        avg_train_loss = current_train_loss / len(train_loader)
-        train_losses.append(avg_train_loss)
-
-        # 검증 단계
-        model.eval()
-        current_val_loss = 0.0
-        with torch.no_grad():
-            for (batch,) in tqdm(val_loader, desc=f"{stage_name} Epoch {epoch+1} [val]"):
-                batch = batch.to(device)
-                x, y = batch[:, :-1], batch[:, 1:]
-                mask = generate_gpt_masks(x, device)
-                pred = model(x, mask)
-                vloss = loss_function(y, pred)
-                current_val_loss += vloss.item()
+        WQ = WQ.view(bsz, -1, self.num_heads, self.depth).permute(0, 2, 1, 3)
+        WK = WK.view(bsz, -1, self.num_heads, self.depth).permute(0, 2, 1, 3)
+        WV = WV.view(bsz, -1, self.num_heads, self.depth).permute(0, 2, 1, 3)
         
-        avg_val_loss = current_val_loss / len(val_loader)
-        val_losses.append(avg_val_loss)
-        print(f"[{stage_name} Epoch {epoch+1}] train_loss={avg_train_loss:.4f} | val_loss={avg_val_loss:.4f}")
+        out, attn = self.scaled_dot_product_attention(WQ, WK, WV, mask)
+        out = out.permute(0, 2, 1, 3).contiguous().view(bsz, -1, self.d_model)
+        return self.linear(out), attn
 
-    return total_step
+class GPTLayer(nn.Module):
+    def __init__(self, d_model, n_heads, d_ff, dropout):
+        super().__init__()
+        self.mha = MultiHeadAttention(d_model, n_heads)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Linear(d_ff, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model, eps=1e-6)
+        self.norm2 = nn.LayerNorm(d_model, eps=1e-6)
+        self.do = nn.Dropout(dropout)
 
-def generate_text(model, start_tokens, vocab, rev_vocab, device, max_len=40):
-    """
-    GPT 모델을 사용하여 텍스트를 생성하는 함수
-    """
+    def forward(self, x, mask):
+        res = x
+        out, _ = self.mha(self.norm1(x), self.norm1(x), self.norm1(x), mask)
+        out = self.do(out) + res
+        
+        res = out
+        out = self.do(self.ffn(self.norm2(out))) + res
+        return out
+
+class GPTModel(nn.Module):
+    def __init__(self, n_layers, d_model, n_heads, d_ff, vocab_size, pos_len, dropout=0.2):
+        super().__init__()
+        self.d_model = float(d_model)
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.register_buffer("pos_encoding", torch.tensor(positional_encoding(pos_len, d_model), dtype=torch.float32))
+        self.do = nn.Dropout(dropout)
+        self.layers = nn.ModuleList([GPTLayer(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+        self.fc = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x, mask):
+        seq_len = x.size(1)
+        out = self.embedding(x) * math.sqrt(self.d_model)
+        out += self.pos_encoding[:seq_len, :].unsqueeze(0)
+        out = self.do(out)
+
+        for layer in self.layers:
+            out = layer(out, mask)
+        return self.fc(out)
+
+def generate_gpt_masks(seq):
+    lookahead_mask = torch.triu(torch.ones(seq.shape[1], seq.shape[1]), diagonal=1).unsqueeze(0).unsqueeze(1).to(device)
+    padding_mask = (seq == 0).unsqueeze(1).unsqueeze(2).float().to(device)
+    return torch.max(padding_mask, lookahead_mask)
+
+model = GPTModel(n_layers=2, d_model=256, n_heads=8, d_ff=512, vocab_size=len(vocab), pos_len=60)
+model.to(device)
+print(model)
+
+# --- 4. Pre-training ---
+
+from torch.utils.data import TensorDataset, DataLoader
+
+def pad_sequences(sequences, max_len):
+    padded = np.zeros((len(sequences), max_len), dtype=np.int32)
+    for i, seq in enumerate(sequences):
+        length = min(len(seq), max_len)
+        padded[i, :length] = seq[:length]
+    return torch.tensor(padded, dtype=torch.long)
+
+MAX_LEN = 40
+pretrain_vector = []
+for q in que_corpus:
+    ids = [vocab["<start>"]] + [vocab.get(w, 1) for w in q] + [vocab["<end>"]]
+    pretrain_vector.append(ids)
+
+data = pad_sequences(pretrain_vector, MAX_LEN)
+dataset = TensorDataset(data)
+loader = DataLoader(dataset, batch_size=64, shuffle=True)
+
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+epochs = 5
+
+model.train()
+for epoch in range(epochs):
+    total_loss = 0
+    for batch in tqdm(loader):
+        x_batch = batch[0].to(device)
+        x, y = x_batch[:, :-1], x_batch[:, 1:]
+        mask = generate_gpt_masks(x)
+        
+        optimizer.zero_grad()
+        output = model(x, mask)
+        loss = F.cross_entropy(output.reshape(-1, output.size(-1)), y.reshape(-1), ignore_index=0)
+        
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        
+    print(f"Epoch {epoch+1} Avg Loss: {total_loss / len(loader):.4f}")
+
+# --- 5. 결과 확인 ---
+
+def generate_text(model, text, max_len=20):
     model.eval()
-    input_ids = torch.tensor([start_tokens], dtype=torch.long).to(device)
+    tokens = pecab.morphs(preprocess_sentence(text))
+    ids = [vocab["<start>"]] + [vocab.get(w, 1) for w in tokens]
+    input_ids = torch.tensor([ids], dtype=torch.long).to(device)
     
-    for _ in range(max_len):
-        mask = generate_gpt_masks(input_ids, device)
-        logits = model(input_ids, mask)
-        pred_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-        if pred_id.item() == vocab["<end>"]:
-            break
-        input_ids = torch.cat([input_ids, pred_id], dim=-1)
-        
-    full_ids = input_ids.squeeze(0).tolist()
-    if vocab["<sep>"] in full_ids:
-        sep_idx = full_ids.index(vocab["<sep>"])
-        gen_ids = full_ids[sep_idx+1:]
-    else:
-        gen_ids = full_ids
-        
-    return [rev_vocab.get(i, "<unk>") for i in gen_ids]
-
-def main():
-    # 하이퍼파라미터 및 경로 설정
-    DATA_PATH = 'data/ChatbotData.csv'
-    WV_PATH = 'data/ko.bin'
-    MODEL_PATH = 'pretrained_gpt.pth'
-    MAX_LEN = 60
-    D_MODEL = 256
-    N_HEADS = 8
-    D_FF = 512
-    DROPOUT = 0.1
-    N_LAYERS = 2
-    BATCH_SIZE = 64
-    PRETRAIN_EPOCHS = 1 
-    FINETUNE_EPOCHS = 2 # 실습 편의상 낮은 값 설정
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # 1. 공통 데이터 로드 및 토큰화 준비
-    questions, answers = load_data(DATA_PATH)
-    que_corpus, ans_corpus = build_corpus(questions, answers)
-    
-    # 2. 어휘(Vocab) 생성 - 챗봇 포맷 기준 (<sep> 포함)
-    wv = load_word2vec(WV_PATH)
-    aug_que, aug_ans = augment_data(que_corpus, ans_corpus, wv)
-    _, vocab = tokenize_and_vectorize_gpt(aug_que, aug_ans)
     rev_vocab = {v: k for k, v in vocab.items()}
-
-    # 3. 모델 초기화
-    model = GPTModel(
-        n_layers=N_LAYERS, d_model=D_MODEL, n_heads=N_HEADS, d_ff=D_FF,
-        vocab_size=len(vocab), pos_len=MAX_LEN, dropout=DROPOUT
-    ).to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9)
-    lr_scheduler = LearningRateScheduler(D_MODEL)
-
-    # ==========================================
-    # STAGE 1: Pre-training (Language Modeling)
-    # ==========================================
-    print("\n[STAGE 1] Pre-training on Question Corpus...")
-    pretrain_vector = tokenize_and_vectorize_pretrain(que_corpus, vocab, MAX_LEN)
-    pretrain_data = pad_sequences(pretrain_vector, MAX_LEN)
     
-    dataset_pt = TensorDataset(pretrain_data)
-    val_size_pt = int(len(dataset_pt) * 0.1)
-    train_size_pt = len(dataset_pt) - val_size_pt
-    train_ds_pt, val_ds_pt = random_split(dataset_pt, [train_size_pt, val_size_pt], generator=torch.Generator().manual_seed(42))
+    with torch.no_grad():
+        for _ in range(max_len):
+            mask = generate_gpt_masks(input_ids)
+            logits = model(input_ids, mask)
+            pred_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            if pred_id.item() == vocab["<end>"]: break
+            input_ids = torch.cat([input_ids, pred_id], dim=-1)
     
-    train_loader_pt = DataLoader(train_ds_pt, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader_pt = DataLoader(val_ds_pt, batch_size=BATCH_SIZE, shuffle=False)
+    res_ids = input_ids.squeeze(0).tolist()[len(ids):]
+    return " ".join([rev_vocab.get(i, "<unk>") for i in res_ids])
 
-    total_step = train_model(
-        model, train_loader_pt, val_loader_pt, optimizer, 
-        lr_scheduler, device, PRETRAIN_EPOCHS, "Pre-train"
-    )
-    
-    # 가중치 저장
-    print(f"Saving pre-trained weights to {MODEL_PATH}...")
-    torch.save(model.state_dict(), MODEL_PATH)
+test_sentences = [
+    "지루하다, 놀러가고 싶어.", 
+    "오늘 일찍 일어났더니 피곤하다.", 
+    "간만에 여자친구랑 데이트 하기로 했어.", 
+    "집에 있는다는 소리야.",     
+]
 
-    # ==========================================
-    # STAGE 2: Fine-tuning (Chatbot Task)
-    # ==========================================
-    print("\n[STAGE 2] Fine-tuning on Q+A Corpus...")
-    # 가중치 로드 (개념적 확인을 위해 다시 불러옴)
-    model.load_state_dict(torch.load(MODEL_PATH))
-    
-    combined_vector, _ = tokenize_and_vectorize_gpt(aug_que, aug_ans)
-    finetune_data = pad_sequences(combined_vector, MAX_LEN)
-    
-    dataset_ft = TensorDataset(finetune_data)
-    val_size_ft = int(len(dataset_ft) * 0.1)
-    train_size_ft = len(dataset_ft) - val_size_ft
-    train_ds_ft, val_ds_ft = random_split(dataset_ft, [train_size_ft, val_size_ft], generator=torch.Generator().manual_seed(42))
-    
-    train_loader_ft = DataLoader(train_ds_ft, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader_ft = DataLoader(val_ds_ft, batch_size=BATCH_SIZE, shuffle=False)
-
-    # total_step을 이어서 진행하여 LR 스케줄러 유지
-    train_model(model, train_loader_ft, val_loader_ft, optimizer, lr_scheduler, device, FINETUNE_EPOCHS, "Fine-tune", total_step_start=total_step)
-
-    # 7. 모델 평가 및 문장 생성 테스트
-    test_questions = ["지루하다, 놀러가고 싶어.", "오늘 일찍 일어났더니 피곤하다.", "너는 누구니?"]
-    pecab = PeCab()
-    print("\n# Final GPT Generation Results")
-    for q in test_questions:
-        q_clean = preprocess_sentence(q)
-        tokens = pecab.morphs(q_clean)
-        start_tokens = [vocab["<start>"]] + [vocab.get(t, vocab["<unk>"]) for t in tokens] + [vocab["<sep>"]]
-        response = generate_text(model, start_tokens, vocab, rev_vocab, device)
-        print(f"Q: {q}")
-        print(f"A: {' '.join(response)}")
-
-if __name__ == "__main__":
-    main()
+for q in test_sentences:
+    print(f"Input: {q}")
+    print(f"Generated: {generate_text(model, q)}")
