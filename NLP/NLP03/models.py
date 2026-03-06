@@ -129,3 +129,26 @@ class Transformer(nn.Module):
         enc_out, _ = self.encoder(self.embedding(self.enc_emb, enc_in), enc_mask)
         dec_out, _, _ = self.decoder(self.embedding(self.dec_emb, dec_in), enc_out, dec_enc_mask, dec_mask)
         return self.fc(dec_out)
+
+class GPTModel(nn.Module):
+    def __init__(self, n_layers, d_model, n_heads, d_ff, vocab_size, pos_len, dropout=0.2):
+        super().__init__()
+        self.d_model = float(d_model)
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.register_buffer("pos_encoding", torch.tensor(positional_encoding(pos_len, d_model), dtype=torch.float32))
+        self.do = nn.Dropout(dropout)
+        # GPT는 본질적으로 인과적 마스크(Causal Mask)를 사용하는 Self-Attention 블록의 스택입니다.
+        # 따라서 우리 코드의 Encoder 클래스를 GPT 블록으로 활용할 수 있습니다.
+        self.blocks = Encoder(n_layers, d_model, n_heads, d_ff, dropout)
+        self.fc = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x, mask):
+        # x: (B, T)
+        seq_len = x.size(1)
+        out = self.embedding(x) * math.sqrt(self.d_model)
+        out += self.pos_encoding[:seq_len, :].unsqueeze(0)
+        out = self.do(out)
+
+        # 'mask'로 generate_gpt_masks에서 생성한 Look-ahead + Padding 마스크를 전달합니다.
+        out, _ = self.blocks(out, mask)
+        return self.fc(out)

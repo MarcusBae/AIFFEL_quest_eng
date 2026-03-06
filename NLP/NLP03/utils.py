@@ -196,3 +196,26 @@ def visualize_attention(sentence, response_tokens, attention, src_tokens):
     ax.set_title("Cross-Attention Map")
     plt.tight_layout()
     plt.show()
+
+def tokenize_and_vectorize_gpt(que_corpus, ans_corpus, max_len=80):
+    # GPT format: <start> Q <sep> A <end>
+    vocab = {"<pad>": 0, "<unk>": 1, "<start>": 2, "<end>": 3, "<sep>": 4}
+    for sentence in que_corpus + ans_corpus:
+        for word in sentence:
+            if word not in vocab: vocab[word] = len(vocab)
+    
+    combined_vectors = []
+    for q, a in zip(que_corpus, ans_corpus):
+        ids = [vocab["<start>"]]
+        ids.extend([vocab.get(w, vocab["<unk>"]) for w in q])
+        ids.append(vocab["<sep>"])
+        ids.extend([vocab.get(w, vocab["<unk>"]) for w in a])
+        ids.append(vocab["<end>"])
+        combined_vectors.append(ids)
+        
+    return combined_vectors, vocab
+
+def generate_gpt_masks(seq, device):
+    lookahead_mask = torch.triu(torch.ones(seq.shape[1], seq.shape[1]), diagonal=1).unsqueeze(0).unsqueeze(1).to(device)
+    padding_mask = (seq == 0).unsqueeze(1).unsqueeze(2).float().to(device)
+    return torch.max(padding_mask, lookahead_mask)
