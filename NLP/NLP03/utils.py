@@ -219,3 +219,13 @@ def generate_gpt_masks(seq, device):
     lookahead_mask = torch.triu(torch.ones(seq.shape[1], seq.shape[1]), diagonal=1).unsqueeze(0).unsqueeze(1).to(device)
     padding_mask = (seq == 0).unsqueeze(1).unsqueeze(2).float().to(device)
     return torch.max(padding_mask, lookahead_mask)
+
+def tokenize_and_vectorize_pretrain(que_corpus, vocab, max_len=60):
+    # Pre-train format: <start> Q <end>
+    vectors = []
+    for q in que_corpus:
+        ids = [vocab["<start>"]]
+        ids.extend([vocab.get(w, vocab["<unk>"]) for w in q])
+        ids.append(vocab["<end>"])
+        vectors.append(ids)
+    return vectors
