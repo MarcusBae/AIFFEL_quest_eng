@@ -80,6 +80,13 @@ from chatgpt.trainer import PPOTrainer
 
 PROMPT_TEMPLATE = "### Instruction(명령어):\n{prompt}\n\n### Response(응답):"
 
+DEFAULT_TEST_PROMPTS = [
+    '불고기용 고기 한우에요?',
+    '리처드 닉슨이 43대 부통령직을 수행한 년도는?',
+    '시카고 오헤어 국제공항은 어디에 있어?',
+    '오늘 미세먼지 어때?'
+]
+
 # -----------------------------------------------------------------------------
 # Utility Functions
 # -----------------------------------------------------------------------------
@@ -96,6 +103,25 @@ def load_jsonl(path):
         return []
     with open(path, "r", encoding='utf-8-sig') as f:
         return json.load(f)
+
+def prepare_pairwise_data(list_data_dict):
+    """
+    kochatgpt_2_RM.jsonl 데이터를 바탕으로 (prompt, chosen, rejected) 쌍을 생성합니다.
+    3개의 답변(completion_0, 1, 2) 중 ranking이 높은 쪽을 chosen으로, 낮은 쪽을 rejected로 설정합니다.
+    """
+    total_pairs = []
+    for item in list_data_dict:
+        prompt = item['prompt']
+        ranking = item['ranking']
+        completions = [item['completion_0'], item['completion_1'], item['completion_2']]
+        
+        # 가능한 모든 쌍 (0,1), (0,2), (1,2)에 대해 비교
+        for i, j in [(0, 1), (0, 2), (1, 2)]:
+            if ranking[i] < ranking[j]:
+                total_pairs.append({'prompt': prompt, 'chosen': completions[i], 'rejected': completions[j]})
+            else:
+                total_pairs.append({'prompt': prompt, 'chosen': completions[j], 'rejected': completions[i]})
+    return total_pairs
 
 def print_func_name(func):
     @functools.wraps(func)
@@ -142,11 +168,14 @@ def generate_pipeline(prompts, model_path, tokenizer):
 
 # Manual implementation - low level
 @print_func_name
-def generate_custom(prompts, model, tokenizer, device='cuda'):
+def generate_custom(prompts, model, tokenizer, device=None):
     """
     하나씩 루프를 돌며 생성, Top-P Sampling을 통해 매번 조금씩 다른 창의적인 답변을 생성
     model.generate를 직접 호출 (Sampling 중심)
     """
+    if device is None:
+        device = next(model.parameters()).device
+    
     model.to(device)
     results = []
     
@@ -420,13 +449,7 @@ def run_sft(cfg, model, tokenizer):
         tokenizer=tokenizer
     )
 
-    list_prompt = [
-        '불고기용 고기 한우에요?',
-        '리처드 닉슨이 43대 부통령직을 수행한 년도는?',
-        '시카고 오헤어 국제공항은 어디에 있어?',
-        '오늘 미세먼지 어때?'
-    ]
-    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt' : tmp}) for tmp in list_prompt]
+    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt' : tmp}) for tmp in DEFAULT_TEST_PROMPTS]
     list_results = generate_pipeline(list_prompt, cfg['sft_saved_dir'], tokenizer)
 
     for result in list_results:
@@ -502,41 +525,7 @@ def run_reward_model(cfg):
     list_data_dict = load_jsonl(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl')
 
     # 3. 조합 생성: 2개의 답변에서 나올 수 있는 모든 쌍(Pair)
-    total_data_ranking2chosen = []
-    for tmp in list_data_dict:
-        one_data_ranking2chosen = []
-
-        data = {}
-        data['prompt'] = tmp['prompt']
-        if tmp['ranking'][0] < tmp['ranking'][1]:
-            data['chosen'] = tmp['completion_0']
-            data['rejected'] = tmp['completion_1']
-        else:
-            data['chosen'] = tmp['completion_1']
-            data['rejected'] = tmp['completion_0']
-        one_data_ranking2chosen.append(data)
-
-        data = {}
-        data['prompt'] = tmp['prompt']
-        if tmp['ranking'][0] < tmp['ranking'][2]:
-            data['chosen'] = tmp['completion_0']
-            data['rejected'] = tmp['completion_2']
-        else:
-            data['chosen'] = tmp['completion_2']
-        data['rejected'] = tmp['completion_0']
-        one_data_ranking2chosen.append(data)
-
-        data = {}
-        data['prompt'] = tmp['prompt']
-        if tmp['ranking'][1] < tmp['ranking'][2]:
-            data['chosen'] = tmp['completion_1']
-            data['rejected'] = tmp['completion_2']
-        else:
-            data['chosen'] = tmp['completion_2']
-            data['rejected'] = tmp['completion_1']
-        one_data_ranking2chosen.append(data)
-        
-        total_data_ranking2chosen.extend(one_data_ranking2chosen)
+    total_data_ranking2chosen = prepare_pairwise_data(list_data_dict)
 
     print('------- 1. ---------------------------------------------')
     print(f'before data num: {len(list_data_dict)}')
@@ -780,14 +769,7 @@ def run_ppo(cfg, model, tokenizer):
     else:
         print("⏩ PPO training skipped as pre-trained model was loaded.")
 
-    list_prompt = [
-        '불고기용 고기 한우에요?',
-        '리처드 닉슨이 43대 부통령직을 수행한 년도는?',
-        '시카고 오헤어 국제공항은 어디에 있어?',
-        '오늘 미세먼지 어때?'
-    ]
-
-    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in list_prompt]
+    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in DEFAULT_TEST_PROMPTS]
 
     outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
     for output in outputs:
@@ -798,7 +780,7 @@ try:
     root_path = os.path.dirname(os.path.abspath(__file__))
 except:
     root_path = os.getcwd()
-
+    
 cfg = {
     "model_name": "skt/kogpt2-base-v2",
     # "device": "cuda" if torch.cuda.is_available() else "cpu",
