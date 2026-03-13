@@ -63,6 +63,8 @@ import json
 import logging
 import copy
 
+
+
 try:
     root_path = os.path.dirname(os.path.abspath(__file__))
 except:
@@ -72,7 +74,6 @@ except:
 def step_01_modify_files():
     modifications = [
         {
-            # "file": "/content/chatgpt/trainer/callbacks/save_checkpoint.py",
             "file": f"{root_path}/chatgpt/trainer/callbacks/save_checkpoint.py",
             "changes": [
                 {
@@ -107,8 +108,8 @@ def step_01_modify_files():
             "changes": [
                 {
                     "line": 3,
-                    "old": "from tqdm import tqdm",
-                    "new": "from tqdm.notebook import tqdm"},
+                    "new": "from tqdm import tqdm",
+                    "old": "from tqdm.notebook import tqdm"},
             ],
         },
         {
@@ -116,8 +117,8 @@ def step_01_modify_files():
             "changes": [
                 {
                     "line": 8,
-                    "old": "from tqdm import tqdm",
-                    "new": "from tqdm.notebook import tqdm"
+                    "new": "from tqdm import tqdm",
+                    "old": "from tqdm.notebook import tqdm"
                 },
             ]
         },
@@ -126,8 +127,8 @@ def step_01_modify_files():
             "changes": [
                 {
                     "line": 8,
-                    "old": "from tqdm import tqdm",
-                    "new": "from tqdm.notebook import tqdm"
+                    "new": "from tqdm import tqdm",
+                    "old": "from tqdm.notebook import tqdm"
                     },
             ]
         }
@@ -173,11 +174,22 @@ from chatgpt.trainer.strategies import NaiveStrategy
 from chatgpt.trainer.rm import RewardModelTrainer
 from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 from transformers.models.gpt2.modeling_gpt2 import GPT2Model
+from chatgpt.models.gpt import GPTActor, GPTCritic
+from chatgpt.trainer import PPOTrainer
 
+from copy import deepcopy
 import random
 
+import functools
 
+def print_func_name(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"-------------------- {func.__name__}() ----------------------------------------")
+        return func(*args, **kwargs)
+    return wrapper
 
+@print_func_name
 def step_02_show_info(cfg):
     print("Torch version:{}".format(torch.__version__)) # Torch version:1.12.1
     # print("Cuda version: {}".format(torch.version.cuda)) # Cuda version: 11.3
@@ -193,6 +205,7 @@ def step_02_show_info(cfg):
 
 # -----------------------------------------------------------------------------
 # 2. Base model and Dataset for RLHF
+@print_func_name
 def show_base_model_and_dataset(cfg, model, tokenizer):
 
     # 베이스라인 모델 - kogpt-2의 일반적인 성능을 확인하기
@@ -256,6 +269,7 @@ def show_base_model_and_dataset(cfg, model, tokenizer):
     # kogpt-2 : 오리지널 GPT2의 가장 작은 버전
 
 # SFT Supervised Fine Tuning 시도할 initial 모델 준비
+@print_func_name
 def show_sft_and_rm_dataset(cfg):
 
     # SFT DataSet - prompt, completion, tokens
@@ -378,15 +392,6 @@ class DataCollatorForSupervisedDataset(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
-import functools
-
-def print_func_name(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        print(f"-------------------- {func.__name__}() ----------------------------------------")
-        return func(*args, **kwargs)
-    return wrapper
-
 # SFT(Supervised Fine-Tuning) 수행 후 결과 확인
 @print_func_name
 def run_sft(cfg, model, tokenizer):
@@ -453,7 +458,7 @@ def run_sft(cfg, model, tokenizer):
 
     # 추론 및 생성 전략
     generation_args = dict(
-        num_beams=4, # 빔 서치의 너비. 클수록 더 좋은 문장을 생성할 확률이 높지만 속도가 느려짐.
+        num_beams=4,            # 빔 서치의 너비. 클수록 더 좋은 문장을 생성할 확률이 높지만 속도가 느려짐.
         repetition_penalty=2.0, # 반복 패널티. 1.0보다 크면 반복을 억제함.
         no_repeat_ngram_size=4, # 값을 2~3으로 조정하면 단어 뭉치가 반복되는 것을 더 세밀하게 막을 수 있다.
         eos_token_id=375,       # 문장 생성 종료 토큰
@@ -486,6 +491,8 @@ def run_sft(cfg, model, tokenizer):
 # -----------------------------------------------------------------------------
 # 4. Reward Model
 # -----------------------------------------------------------------------------
+
+# GPTRM_custom: GPT 모델 뒤에 Reward를 출력하기 위한 Scalar Head(Linear layer)가 붙은 커스텀 모델입니다.
 class GPTRM_custom(RewardModel):
     def __init__(self,
                  pretrained: Optional[str] = None,
@@ -517,37 +524,35 @@ class GPTRM_custom(RewardModel):
     def save_pretrained(self, dir):
         if not os.path.exists(dir):
             os.makedirs(dir)
+        
         torch.save(self.state_dict(), os.path.join(dir, 'reward_model.pt'))
         if self.pretrained is not None:
             self.model.save_pretrained(dir)
 
-def test_04():
-    # 모델과 토크나이저 로드
-    # with구문의 NaiveStrategy는 chatgpt/trainer/strategies/base 모듈에서 정의된
-    # Strategy클래스를 상속한 NaiveStrategy클래스이다.
+# Step 2 - (Reward Model, RM) 학습, 추론
+@print_func_name
+def run_reward_model(cfg):
 
+    # 1. 환경 설정 및 모델 초기화
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     elif hasattr(torch, 'xpu') and torch.xpu.is_available():
         torch.xpu.empty_cache()
 
-    model = AutoModelForCausalLM.from_pretrained('skt/kogpt2-base-v2')
-    tokenizer = AutoTokenizer.from_pretrained(
-        'skt/kogpt2-base-v2',
-        bos_token='</s>', eos_token='</s>', unk_token='</s>', pad_token='</s>',
-        padding_side="right",
-        model_max_length=512,
-    )
-
+    # NaiveStrategy class
+    #   분산 학습이나 모델 초기화 방식을 정의하는 전략 클래스. 여기서는 모델 생성 컨텍스트를 제공합니다.
+    #   chatgpt/trainer/strategies/base 모듈의 Strategy를 상속
     with NaiveStrategy().model_init_context():
-        model = GPTRM_custom(pretrained='skt/kogpt2-base-v2',
+        model = GPTRM_custom(pretrained=cfg['model_name'],
                             lora_rank=0, tokenizer=tokenizer).to(cfg['device'])
-                            # lora_rank=0, tokenizer=tokenizer).cuda()
 
-    # RM을 훈련시킬 때 사용할 ranking dataset 생성
-    with open('KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl', "r", encoding='utf-8-sig') as json_file:
+    # 2. 데이터셋 구성 (Pairwise Ranking)
+    
+    # kochatgpt_2_RM.jsonl - 각 프롬프트에 대한 응답 두 개(completion_0, completion_1), 선호도 순위(ranking)로 구성
+    with open(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl', "r", encoding='utf-8-sig') as json_file:
         list_data_dict = json.load(json_file)
 
+    # 3. 조합 생성: 2개의 답변에서 나올 수 있는 모든 쌍(Pair)
     total_data_ranking2chosen = []
     for tmp in list_data_dict:
         one_data_ranking2chosen = []
@@ -581,6 +586,7 @@ def test_04():
             data['chosen'] = tmp['completion_2']
             data['rejected'] = tmp['completion_1']
         one_data_ranking2chosen.append(data)
+        
         total_data_ranking2chosen.extend(one_data_ranking2chosen)
 
     print('------- 1. ---------------------------------------------')
@@ -589,14 +595,15 @@ def test_04():
     print(f'data example: {total_data_ranking2chosen[45]}')
 
     """
-    # kochatgpt_2_RM.jsonl 은
-    #   chatGPT, davinch, ada 세개 모델에 같은 prompt를 주고 얻은 세 답변을
-    #   순서대로 good, bad, worst로 간주해
-    #   순서를 뒤섞어 completion_0, completion_1, completion_2 세 키에 할당하여 만든 데이터셋입니다.
+    # kochatgpt_2_RM.jsonl
+    #   chatGPT, davinch, ada 세개의 모델에 같은 prompt를 주고 얻은 답변을
+    #   순서대로 good, bad, worst로 간주
+    #   순서를 뒤섞어 completion_0, completion_1, completion_2 세 키에 할당하여 만든 데이터셋
+    
     #   이러면 chosen과 resjected에 각각
     #   completion_0, completion_1, completion_2 세개 답변이 가능한 모든 조합으로 들어가게 되어
     #       chosen에 worst 답변이 들어가고
-    #       rejected에 good답변이 들어간 데이터도 만들어집니다.
+    #       rejected에 good답변이 들어간 데이터도 생성됨. 
 
     # 위와 같이 ranking dataset을 만들면 RM의 loss는 어떻게 계산이 되는 걸까요?
     # RM의 loss function은 pairwiseloss라는 이름으로 설계되어 있습니다.
@@ -626,8 +633,6 @@ def test_04():
     #      for index in range(1, len(ranking)):
     #          n = ranking[0]
     #          m = ranking[index]
-
-
     #          data = {
     #              'prompt': prompt,
     #              'chosen': tmp['completion_{}'.format(n)],
@@ -657,7 +662,7 @@ def test_04():
     # 반면에, 노이즈나 불확실성이 큰 데이터라면, 단순히 최고 후보와의 비교만 사용하는 것이 더 안정적일 수 있습니다
     """
 
-    # 완성한 ranking dataset을 shuffle한 후 훈련셋을 만들어보겠습니다.
+    # ranking dataset을 shuffle한 후 train set를 생성
     # 빠르게 돌려보기 위해 전체 데이터중 일부만 학습
     random.seed(230319)
     random.shuffle(total_data_ranking2chosen)
@@ -692,7 +697,7 @@ def test_04():
     print(train_data[idx]['rejected'])
 
     # Reward Model 학습
-    if not os.path.exists(os.path.join('models/output_2_RM', 'reward_model.pt')):
+    if not os.path.exists(os.path.join(f'{cfg["root_path"]}/models/output_2_RM', 'reward_model.pt')):
         trainer = RewardModelTrainer(model=model,
                                  strategy=NaiveStrategy(),
                                  optim=torch.optim.Adam(model.parameters(), lr=5e-5),
@@ -701,12 +706,12 @@ def test_04():
                                  batch_size=4,
                                  max_epochs=1)
         trainer.fit(use_lora=0)
-        model.save_pretrained('models/output_2_RM')
+        model.save_pretrained(f'{cfg["root_path"]}/models/output_2_RM')
     else:
         # 권장 방법: 커스텀 클래스로 로드하고 state_dict 적용
         with NaiveStrategy().model_init_context():
-            model = GPTRM_custom(pretrained='skt/kogpt2-base-v2', lora_rank=0, tokenizer=tokenizer)
-            state_dict = torch.load('models/output_2_RM/reward_model.pt', map_location=cfg['device'])
+            model = GPTRM_custom(pretrained=cfg['model_name'], lora_rank=0, tokenizer=tokenizer)
+            state_dict = torch.load(f'{cfg["root_path"]}/models/output_2_RM/reward_model.pt', map_location=cfg['device'])
             model.load_state_dict(state_dict)
             model = model.to(cfg['device'])
 
@@ -749,16 +754,14 @@ def test_04():
 # -----------------------------------------------------------------------------
 # 5. Proximal Policy Optimization (PPO)
 # -----------------------------------------------------------------------------
-from chatgpt.models.gpt import GPTActor, GPTCritic
-from chatgpt.trainer import PPOTrainer
-from copy import deepcopy
 
-def test_05():
-    root_path = os.path.dirname(os.path.abspath(__file__))
+@print_func_name
+def run_ppo(cfg, model, tokenizer):
+    # root_path = os.path.dirname(os.path.abspath(__file__))
     device = cfg['device']
-    tokenizer_name = "skt/kogpt2-base-v2"
+    # tokenizer_name = "skt/kogpt2-base-v2"
 
-    ppo_model_path = os.path.join(root_path, 'models/output_3_PPO')
+    ppo_model_path = os.path.join(cfg["root_path"], 'models/output_3_PPO')
     ppo_model_exists = os.path.exists(ppo_model_path)
 
     with NaiveStrategy().model_init_context():
@@ -766,18 +769,18 @@ def test_05():
             print(f"✅ Loading pre-trained PPO model from {ppo_model_path}")
             actor = GPTActor(pretrained=ppo_model_path, lora_rank=0).to(device)
         else:
-            print(f"🚀 Loading SFT model for PPO training from {root_path}/models/output_1_SFT")
-            actor = GPTActor(pretrained=f'{root_path}/models/output_1_SFT', lora_rank=0).to(device)
+            print(f"🚀 Loading SFT model for PPO training from {cfg["root_path"]}/models/output_1_SFT")
+            actor = GPTActor(pretrained=f'{cfg["root_path"]}/models/output_1_SFT', lora_rank=0).to(device)
 
-        critic = GPTCritic(pretrained=f'{root_path}/models/output_2_RM', lora_rank=0).to(device)
+        critic = GPTCritic(pretrained=f'{cfg["root_path"]}/models/output_2_RM', lora_rank=0).to(device)
 
 
-        tokenizer = PreTrainedTokenizerFast.from_pretrained(
-            tokenizer_name,
-            bos_token='</s>', eos_token='</s>', unk_token='<unk>', pad_token='<pad>', mask_token='<mask>',
-            padding_side="right",
-            model_max_length=512,
-        )
+        # tokenizer = PreTrainedTokenizerFast.from_pretrained(
+        #     tokenizer_name,
+        #     bos_token='</s>', eos_token='</s>', unk_token='<unk>', pad_token='<pad>', mask_token='<mask>',
+        #     padding_side="right",
+        #     model_max_length=512,
+        # )
 
         initial_model = deepcopy(actor)
         reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
@@ -790,7 +793,7 @@ def test_05():
                                 (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
 
     # PPO 학습에 쓸 데이터를 불러와 토크나이징
-    with open(f'{root_path}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl', "r", encoding='utf-8-sig') as json_file:
+    with open(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl', "r", encoding='utf-8-sig') as json_file:
         list_data_dict = json.load(json_file)
         list_prompt = [tmp['prompt'] for tmp in list_data_dict]
 
@@ -802,11 +805,10 @@ def test_05():
 
         return {k: v for k, v in batch.items()}
 
-    print(tokenize_fn('It takes something more than intelligence to act intelligently.'))
-    len(list_prompt)
+    # print(tokenize_fn('It takes something more than intelligence to act intelligently.'))
+    # len(list_prompt)
 
-
-    # PPO는 별도의 PPOTrainer 클래스를 설계하여 학습해야 한다.
+    # PPO는 별도의 PPOTrainer를 설계하여 학습한다. 
     trainer = PPOTrainer(NaiveStrategy(),
                      actor,
                      critic,
@@ -841,6 +843,10 @@ def test_05():
         print("✅ PPO training completed and model saved.")
     else:
         print("⏩ PPO training skipped as pre-trained model was loaded.")
+
+
+
+
 
 
     # 드디어 SFT, RM 그리고 PPO 학습이 모두 완료되었습니다.
@@ -903,12 +909,9 @@ tokenizer = PreTrainedTokenizerFast.from_pretrained(
     model_max_length=512,
 )
 
-
 step_02_show_info(cfg)
-
-
 show_base_model_and_dataset(cfg, model, tokenizer)
 show_sft_and_rm_dataset(cfg)
 run_sft(cfg, model, tokenizer)
-test_04()
-test_05()
+run_reward_model(cfg)
+run_ppo(cfg, model, tokenizer)
