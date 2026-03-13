@@ -15,8 +15,9 @@
 # -----------------------------------------------------------------------------
 # 1. 준비
 # # $ git clone https://github.com/airobotlab/KoChatGPT
-# $ cp -r /content/KoChatGPT/colossalai_ChatGPT_230319/chatgpt /content/chatgpt
+# $ cp -r ./KoChatGPT/colossalai_ChatGPT_230319/chatgpt ./chatgpt
 # $ pip install datasets loralib trl
+# # pip install colossalai --upgrade
 
 # 공지
 # 1. 토크나이저가 오류
@@ -41,7 +42,12 @@
 # -----------------------------------------------------------------------------
 
 import os
+
 import torch
+import torch.nn as nn
+from torch.utils.data import Dataset
+
+
 import transformers
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import pandas as pd
@@ -49,7 +55,6 @@ import numpy
 import json
 
 from typing import Optional, Dict, Sequence
-from torch.utils.data import Dataset
 from dataclasses import dataclass
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerFast
 import pandas as pd
@@ -65,14 +70,13 @@ from chatgpt.trainer.rm import RewardModelTrainer
 from transformers.models.gpt2.configuration_gpt2 import GPT2Config
 from transformers.models.gpt2.modeling_gpt2 import GPT2Model
 
-import torch.nn as nn
 import random
 
-def step_01_modify_files():
+def step_01_modify_files(cfg):
     modifications = [
         {
             # "file": "/content/chatgpt/trainer/callbacks/save_checkpoint.py",
-            "file": "./chatgpt/trainer/callbacks/save_checkpoint.py",
+            "file": f"{cfg['root_path']}/chatgpt/trainer/callbacks/save_checkpoint.py",
             "changes": [
                 {
                     "line": 3,
@@ -87,7 +91,7 @@ def step_01_modify_files():
             ],
         },
         {
-            "file": "./chatgpt/trainer/strategies/__init__.py",
+            "file": f"{cfg['root_path']}/chatgpt/trainer/strategies/__init__.py",
             "changes": [
                 {
                     "line": 1,
@@ -102,7 +106,7 @@ def step_01_modify_files():
             ],
         },
         {
-            "file": "./chatgpt/dataset/reward_dataset.py",
+            "file": f"{cfg['root_path']}/chatgpt/dataset/reward_dataset.py",
             "changes": [
                 {
                     "line": 3,
@@ -111,7 +115,7 @@ def step_01_modify_files():
             ],
         },
         {
-            "file": "./chatgpt/trainer/base.py",
+            "file": f"{cfg['root_path']}/chatgpt/trainer/base.py",
             "changes": [
                 {
                     "line": 8,
@@ -121,7 +125,7 @@ def step_01_modify_files():
             ]
         },
         {
-            "file": "./chatgpt/trainer/rm.py",
+            "file": f"{cfg['root_path']}/chatgpt/trainer/rm.py",
             "changes": [
                 {
                     "line": 8,
@@ -163,11 +167,18 @@ def step_01_modify_files():
     for mod in modifications:
         modify_file(mod["file"], mod["changes"])
 
-def step_02_show_info():
+def step_02_show_info(cfg):
     print("Torch version:{}".format(torch.__version__)) # Torch version:1.12.1
-    print("Cuda version: {}".format(torch.version.cuda)) # Cuda version: 11.3
+    # print("Cuda version: {}".format(torch.version.cuda)) # Cuda version: 11.3
+    print("Device: {}".format(cfg['device']))
     print("transformers version: {}".format(transformers.__version__)) # transformers 4.28.0
-    print("GPU available: {}".format(torch.cuda.is_available()))
+    
+    if "cuda" in str(cfg['device']):
+        print("GPU available: {}".format(torch.cuda.is_available()))
+    elif "xpu" in str(cfg['device']):
+        print("XPU available: {}".format(torch.xpu.is_available()))
+    else:
+        print("Using CPU")
 
 # -----------------------------------------------------------------------------
 # 2. Base model and Dataset for RLHF
@@ -234,10 +245,10 @@ def show_base_model_and_dataset(cfg, model, tokenizer):
     # kogpt-2 : 오리지널 GPT2의 가장 작은 버전
 
 # SFT Supervised Fine Tuning 시도할 initial 모델 준비
-def show_sft_and_rm_dataset():
+def show_sft_and_rm_dataset(cfg):
 
     # SFT DataSet - prompt, completion, tokens
-    data_path_1_SFT = 'KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl'
+    data_path_1_SFT = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl'
     with open(data_path_1_SFT, "r", encoding='utf-8-sig') as json_file:
         list_data_dict = json.load(json_file)
 
@@ -247,7 +258,7 @@ def show_sft_and_rm_dataset():
     print(r)
 
     # RM DataSet - prompt, completion_0, 1, 2, ranking
-    data_path_2_RM = 'KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl'
+    data_path_2_RM = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl'
     with open(data_path_2_RM, "r", encoding='utf-8-sig') as json_file:
         list_data_dict = json.load(json_file)
 
@@ -257,7 +268,7 @@ def show_sft_and_rm_dataset():
     print(r)
 
     # PPO (Proximal Policy Optimization) 학습에 쓰일 데이터 준비 - prompt only
-    data_path_3_PPO = 'KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl'
+    data_path_3_PPO = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl'
     with open(data_path_3_PPO, "r", encoding='utf-8-sig') as json_file:
         list_data_dict = json.load(json_file)
 
@@ -361,13 +372,19 @@ import functools
 def print_func_name(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        print(f"-------------------- {func.__name__} ----------------------------------------")
+        print(f"-------------------- {func.__name__}() ----------------------------------------")
         return func(*args, **kwargs)
     return wrapper
 
 # SFT(Supervised Fine-Tuning) 수행 후 결과 확인
 @print_func_name
 def run_sft(cfg, model, tokenizer):
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        torch.xpu.empty_cache()
+        
     # 학습용 배치 Batch 생성기
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
 
@@ -407,9 +424,13 @@ def run_sft(cfg, model, tokenizer):
     )
 
     # if not os.path.exists(f"{cfg['sft_saved_dir']}"):
-    if not os.path.exists(cfg['sft_saved_dir']):
+    if not os.path.exists(os.path.join(cfg['sft_saved_dir'], 'config.json')):
+        if not os.path.exists(cfg['sft_saved_dir']):
+            os.makedirs(cfg['sft_saved_dir'])
         trainer.train() # 학습 시작
         model.save_pretrained(cfg['sft_saved_dir'])
+    else:
+        print(f"SFT model already exists: {cfg['sft_saved_dir']}")
 
     # 문장 생성 능력 확인위한 pipleline generator 생성
     # Text generation strategies
@@ -454,7 +475,6 @@ def run_sft(cfg, model, tokenizer):
 # -----------------------------------------------------------------------------
 # 4. Reward Model
 # -----------------------------------------------------------------------------
-
 class GPTRM_custom(RewardModel):
     def __init__(self,
                  pretrained: Optional[str] = None,
@@ -495,7 +515,10 @@ def test_04():
     # with구문의 NaiveStrategy는 chatgpt/trainer/strategies/base 모듈에서 정의된
     # Strategy클래스를 상속한 NaiveStrategy클래스이다.
 
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        torch.xpu.empty_cache()
 
     model = AutoModelForCausalLM.from_pretrained('skt/kogpt2-base-v2')
     tokenizer = AutoTokenizer.from_pretrained(
@@ -507,10 +530,10 @@ def test_04():
 
     with NaiveStrategy().model_init_context():
         model = GPTRM_custom(pretrained='skt/kogpt2-base-v2',
-                            lora_rank=0, tokenizer=tokenizer).to('cuda'if torch.cuda.is_available() else 'cpu')
+                            lora_rank=0, tokenizer=tokenizer).to(cfg['device'])
                             # lora_rank=0, tokenizer=tokenizer).cuda()
 
-    # RM을 훈련시킬 때 사용할 ranking dataset을 만들어보겠습니다.
+    # RM을 훈련시킬 때 사용할 ranking dataset 생성
     with open('KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl', "r", encoding='utf-8-sig') as json_file:
         list_data_dict = json.load(json_file)
 
@@ -658,7 +681,7 @@ def test_04():
     print(train_data[idx]['rejected'])
 
     # Reward Model 학습
-    if not os.path.exists('models/output_2_RM'):
+    if not os.path.exists(os.path.join('models/output_2_RM', 'reward_model.pt')):
         trainer = RewardModelTrainer(model=model,
                                  strategy=NaiveStrategy(),
                                  optim=torch.optim.Adam(model.parameters(), lr=5e-5),
@@ -672,12 +695,12 @@ def test_04():
         # 권장 방법: 커스텀 클래스로 로드하고 state_dict 적용
         with NaiveStrategy().model_init_context():
             model = GPTRM_custom(pretrained='skt/kogpt2-base-v2', lora_rank=0, tokenizer=tokenizer)
-            state_dict = torch.load('models/output_2_RM/reward_model.pt', map_location='cuda' if torch.cuda.is_available() else 'cpu')
+            state_dict = torch.load('models/output_2_RM/reward_model.pt', map_location=cfg['device'])
             model.load_state_dict(state_dict)
-            model = model.to('cuda' if torch.cuda.is_available() else 'cpu')
+            model = model.to(cfg['device'])
 
     def inference_RM(input_text):
-        input_ids = tokenizer.encode(input_text, return_tensors='pt').cuda()
+        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(cfg['device'])
         output = model(input_ids)
         output_reward = output.cpu().detach().numpy()[0]
 
@@ -706,7 +729,10 @@ def test_04():
     # RLHF의 마지막 단계인 PPO 학습을 통해 살펴보도록 하겠습니다.
     # 여기서도 메모리 관리를 위해 한 번더 캐시를 비우고 넘어가겠습니다.
 
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        torch.xpu.empty_cache()
 
 
 # -----------------------------------------------------------------------------
@@ -718,7 +744,7 @@ from copy import deepcopy
 
 def test_05():
     root_path = os.path.dirname(os.path.abspath(__file__))
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = cfg['device']
     tokenizer_name = "skt/kogpt2-base-v2"
 
     ppo_model_path = os.path.join(root_path, 'models/output_3_PPO')
@@ -760,8 +786,8 @@ def test_05():
     def tokenize_fn(texts):
         batch = tokenizer(texts, return_tensors='pt', max_length=96, padding=True, truncation=True)
 
-        if device == 'cuda':
-            return {k: v.cuda() for k, v in batch.items()}
+        if str(device) == 'cuda' or str(device) == 'xpu':
+            return {k: v.to(device) for k, v in batch.items()}
 
         return {k: v for k, v in batch.items()}
 
@@ -793,7 +819,7 @@ def test_05():
     # PPO의 loss function : chatgpt/models/loss.py PolicyLoss, ValueLoss class 에서 정의
 
     # PPO 학습
-    if not ppo_model_exists:
+    if not os.path.exists(os.path.join(ppo_model_path, 'config.json')):
         print("⏳ Starting PPO training...")
         trainer.fit(list_prompt,
                 num_episodes=10,
@@ -809,8 +835,7 @@ def test_05():
     # 드디어 SFT, RM 그리고 PPO 학습이 모두 완료되었습니다.
     # RLHF가 적용된 koGPT-2의 생성능력을 확인해볼까요?
     def generation(input_text, model):
-        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(
-            torch.cuda.current_device())
+        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(cfg['device'])
         outputs = model.generate(input_ids,
                                 max_length=250,
                                 do_sample=True,
@@ -848,17 +873,18 @@ except:
 
 cfg = {
     "model_name": "skt/kogpt2-base-v2",
-    "device": "cuda" if torch.cuda.is_available() else "cpu",
+    # "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
     "root_path": root_path,
 
     "sft_output_dir": root_path + "/test",
     "sft_saved_dir": root_path + "/models/output_1_SFT",
     "sft_num_train_epochs": 1,
-    "sft_per_device_train_batch_size": 8,
-    "sft_per_device_eval_batch_size": 8,
+    "sft_per_device_train_batch_size": 4,
+    "sft_per_device_eval_batch_size": 4,
     "sft_warmup_steps": 5,
     "sft_prediction_loss_only": True,
-    "sft_fp16": True
+    "sft_fp16": False # XPU sometimes has issues with fp16 in older versions or specific setups, let's try False or BF16
 }
 
 # tokenizer, model 준비
@@ -870,6 +896,12 @@ tokenizer = PreTrainedTokenizerFast.from_pretrained(
     model_max_length=512,
 )
 
+step_01_modify_files(cfg)
+step_02_show_info(cfg)
+
+
 show_base_model_and_dataset(cfg, model, tokenizer)
-show_sft_and_rm_dataset()
+show_sft_and_rm_dataset(cfg)
 run_sft(cfg, model, tokenizer)
+test_04()
+test_05()
