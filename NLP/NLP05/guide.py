@@ -67,109 +67,6 @@ from transformers import (
     pipeline
 )
 
-
-try:
-    root_path = os.path.dirname(os.path.abspath(__file__))
-except:
-    root_path = os.getcwd()
-
-
-def step_01_modify_files():
-    modifications = [
-        {
-            "file": f"{root_path}/chatgpt/trainer/callbacks/save_checkpoint.py",
-            "changes": [
-                {
-                    "line": 3,
-                    "old": "from chatgpt.trainer.strategies import ColossalAIStrategy, Strategy",
-                    "new": "from chatgpt.trainer.strategies import Strategy"
-                },
-                {
-                    "line": 71,
-                    "old": "only_rank0 = not isinstance(self.strategy, ColossalAIStrategy)",
-                    "new": "            only_rank0 = not isinstance(self.strategy)"
-                },
-            ],
-        },
-        {
-            "file": f"{root_path}/chatgpt/trainer/strategies/__init__.py",
-            "changes": [
-                {
-                    "line": 1,
-                    "old": "from .colossalai import ColossalAIStrategy",
-                    "new": ""
-                },
-                {
-                    "line": 5,
-                    "old": "__all__ = ['Strategy', 'NaiveStrategy', 'DDPStrategy', 'ColossalAIStrategy']",
-                    "new": "__all__ = ['Strategy', 'NaiveStrategy', 'DDPStrategy']"
-                },
-            ],
-        },
-        {
-            "file": f"{root_path}/chatgpt/dataset/reward_dataset.py",
-            "changes": [
-                {
-                    "line": 3,
-                    "new": "from tqdm import tqdm",
-                    "old": "from tqdm.notebook import tqdm"},
-            ],
-        },
-        {
-            "file": f"{root_path}/chatgpt/trainer/base.py",
-            "changes": [
-                {
-                    "line": 8,
-                    "new": "from tqdm import tqdm",
-                    "old": "from tqdm.notebook import tqdm"
-                },
-            ]
-        },
-        {
-            "file": f"{root_path}/chatgpt/trainer/rm.py",
-            "changes": [
-                {
-                    "line": 8,
-                    "new": "from tqdm import tqdm",
-                    "old": "from tqdm.notebook import tqdm"
-                    },
-            ]
-        }
-    ]
-
-    def modify_file(file_path, changes):
-        if not os.path.exists(file_path):
-            print(f"ERROR: file not found : {file_path}")
-            return
-
-        with open(file_path, "r", encoding="utf-8") as file:
-            lines = file.readlines()
-
-        modified = False
-
-        for change in changes:
-            line_index = change["line"]
-            if 0 <= line_index < len(lines):
-                if lines[line_index].strip() == change["old"]:
-                    lines[line_index] = change["new"] + "\n"
-                    modified = True
-                else:
-                    print(f"ERROR: {file_path} file {change['line']}th line not match")
-                    print(f"   expected: {change['old']}")
-                    print(f"   actual: {lines[line_index].strip()}")
-
-        if modified:
-            with open(file_path, "w", encoding="utf-8") as file:
-                file.writelines(lines)
-            print(f"SUCCESS: {file_path} modified")
-        else:
-            print(f"ERROR: {file_path} no modification")
-
-    for mod in modifications:
-        modify_file(mod["file"], mod["changes"])
-
-step_01_modify_files()
-
 from chatgpt.dataset import RewardDataset
 from chatgpt.models.base import RewardModel
 from chatgpt.trainer.strategies import NaiveStrategy
@@ -214,6 +111,8 @@ def print_func_name(func):
 @print_func_name
 def generate_pipeline(prompts, model_path, tokenizer):
     """
+    리스트 전체를 파이프라인에 던져 처리, Beam Search와 Penalty 덕분에 문장이 꼬이거나 반복되는 현상이 훨씬 적음
+
     """
     # 파이프라인 생성
     generator = transformers.pipeline(
@@ -245,6 +144,7 @@ def generate_pipeline(prompts, model_path, tokenizer):
 @print_func_name
 def generate_custom(prompts, model, tokenizer, device='cuda'):
     """
+    하나씩 루프를 돌며 생성, Top-P Sampling을 통해 매번 조금씩 다른 창의적인 답변을 생성
     model.generate를 직접 호출 (Sampling 중심)
     """
     model.to(device)
@@ -264,7 +164,7 @@ def generate_custom(prompts, model, tokenizer, device='cuda'):
         )
         
         # 디코딩 (outputs[0]는 전체 시퀀스이므로 바로 decode)
-        # output_text = tokenizer.decode(outputs[0], skip_special_tokens=True) <- 느린원인인가? 
+        # output_text = tokenizer.decode(outputs[0], skip_special_tokens=True) 
         output_text = tokenizer.batch_decode(outputs[0], skip_special_tokens=True)[0]
         results.append(output_text)
         
@@ -291,11 +191,8 @@ def show_base_model_and_dataset(cfg, model, tokenizer):
 
     # 베이스라인 모델 - kogpt-2의 일반적인 성능을 확인하기
     # print('--- 1 ------------------------------------------------')
-    r = tokenizer.model_max_length
-    # print(r)   # 입력 최대 토큰 수
-
-    r = model.config.n_positions
-    # print(r)    # 모델이 입력받아 처리할 수 있는 최대 토큰 수 ?
+    r = tokenizer.model_max_length  # 입력 최대 토큰 수
+    r = model.config.n_positions    # 모델이 입력받아 처리할 수 있는 최대 토큰 수 ?
 
     input_txt = "바람도 없는 공중에 수직의 파문을 내이며 고요히 떨어지는 오동잎은 누구의 발자취 입니까."
     tokens = tokenizer(input_txt).tokens()
@@ -466,9 +363,8 @@ class DataCollatorForSupervisedDataset(object):
 # SFT(Supervised Fine-Tuning) 수행 후 결과 확인
 @print_func_name
 def run_sft(cfg, model, tokenizer):
-    
     clear_device_cache()
-        
+
     # 학습용 배치 Batch 생성기
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
 
@@ -808,7 +704,7 @@ def run_reward_model(cfg):
 # -----------------------------------------------------------------------------
 @print_func_name
 def run_ppo(cfg, model, tokenizer):
-    # root_path = os.path.dirname(os.path.abspath(__file__))
+
     device = cfg['device']
 
     ppo_model_path = os.path.join(cfg["root_path"], 'models/output_3_PPO')
@@ -816,10 +712,10 @@ def run_ppo(cfg, model, tokenizer):
 
     with NaiveStrategy().model_init_context():
         if ppo_model_exists:
-            print(f"✅ Loading pre-trained PPO model from {ppo_model_path}")
+            #print(f"✅ Loading pre-trained PPO model from {ppo_model_path}")
             actor = GPTActor(pretrained=ppo_model_path, lora_rank=0).to(device)
         else:
-            print(f"🚀 Loading SFT model for PPO training from {cfg["root_path"]}/models/output_1_SFT")
+            #print(f"🚀 Loading SFT model for PPO training from {cfg["root_path"]}/models/output_1_SFT")
             actor = GPTActor(pretrained=f'{cfg["root_path"]}/models/output_1_SFT', lora_rank=0).to(device)
 
         critic = GPTCritic(pretrained=f'{cfg["root_path"]}/models/output_2_RM', lora_rank=0).to(device)
@@ -827,14 +723,13 @@ def run_ppo(cfg, model, tokenizer):
         initial_model = deepcopy(actor)
         reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
 
-    # 옵티마이저, 모델 준비
     actor_optim = torch.optim.Adam(actor.parameters(), lr=5e-6)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=5e-6)
 
     (actor, actor_optim), (critic, critic_optim), reward_model, initial_model = NaiveStrategy().prepare(
                                 (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
 
-    # PPO 학습에 쓸 데이터를 불러와 토크나이징
+    # PPO 학습에 쓸 데이터를 토크나이징
     list_data_dict = load_jsonl(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl')
     list_prompt = [tmp['prompt'] for tmp in list_data_dict]
 
@@ -891,15 +786,18 @@ def run_ppo(cfg, model, tokenizer):
         '시카고 오헤어 국제공항은 어디에 있어?',
         '오늘 미세먼지 어때?'
     ]
+
     list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in list_prompt]
 
-    # for input_text in list_prompt:
     outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
-    # print(f"\n[Custom Generate Result]\n{output}")
-
     for output in outputs:
         print(output)
         print("\n")
+
+try:
+    root_path = os.path.dirname(os.path.abspath(__file__))
+except:
+    root_path = os.getcwd()
 
 cfg = {
     "model_name": "skt/kogpt2-base-v2",
