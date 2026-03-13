@@ -189,6 +189,66 @@ def print_func_name(func):
         return func(*args, **kwargs)
     return wrapper
 
+# Pipeline API - high level
+@print_func_name
+def generate_pipeline(prompts, model_path, tokenizer):
+    """
+    """
+    # 파이프라인 생성
+    generator = transformers.pipeline(
+        'text-generation',
+        model=model_path,
+        tokenizer=tokenizer,
+        device=0 if torch.cuda.is_available() else -1 # GPU 자동 할당
+    )
+
+    # 생성 옵션 설정
+    generation_args = dict(
+        num_beams=4,            # 빔 서치의 너비. 클수록 더 좋은 문장을 생성할 확률이 높지만 속도가 느려짐.
+        repetition_penalty=2.0, # 반복 패널티. 1.0보다 크면 반복을 억제함.
+        no_repeat_ngram_size=4, # 값을 2~3으로 조정하면 단어 뭉치가 반복되는 것을 더 세밀하게 막을 수 있다.
+        eos_token_id=tokenizer.eos_token_id,    # 문장 생성 종료 토큰
+        max_new_tokens=64,      # 생성할 최대 토큰 수
+        do_sample=True,         # sampling을 통해 더 다양한 문장을 생성한다.
+        top_k=50,               # 값을 40~50 정도로 설정하면 모델이 다음 단어를 선택할 때 확률이 높은 상위 50개 단어 중에서만 고르게 된다. 
+                                # (낮을수록 일관성↑, 높을수록 다양성↑)
+        early_stopping=True     # 조기 종료
+    )
+
+    list_result = generator(prompts, **generation_args)
+    
+    results = [result[0]['generated_text'] for result in list_result]        
+    return results
+
+# Manual implementation - low level
+@print_func_name
+def generate_custom(prompts, model, tokenizer, device='cuda'):
+    """
+    model.generate를 직접 호출 (Sampling 중심)
+    """
+    model.to(device)
+    results = []
+    
+    for input_text in prompts:
+        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(device)
+        
+        outputs = model.generate(
+            input_ids,
+            max_length=250,
+            do_sample=True,
+            top_k=50,
+            top_p=0.95,
+            num_return_sequences=1,
+            pad_token_id=tokenizer.eos_token_id # 패딩 토큰 설정 권장
+        )
+        
+        # 디코딩 (outputs[0]는 전체 시퀀스이므로 바로 decode)
+        # output_text = tokenizer.decode(outputs[0], skip_special_tokens=True) <- 느린원인인가? 
+        output_text = tokenizer.batch_decode(outputs[0], skip_special_tokens=True)[0]
+        results.append(output_text)
+        
+    return results
+
 @print_func_name
 def step_02_show_info(cfg):
     print("Torch version:{}".format(torch.__version__)) # Torch version:1.12.1
@@ -209,12 +269,12 @@ def step_02_show_info(cfg):
 def show_base_model_and_dataset(cfg, model, tokenizer):
 
     # 베이스라인 모델 - kogpt-2의 일반적인 성능을 확인하기
-    print('--- 1 ------------------------------------------------')
+    # print('--- 1 ------------------------------------------------')
     r = tokenizer.model_max_length
-    print(r)   # 입력 최대 토큰 수
+    # print(r)   # 입력 최대 토큰 수
 
     r = model.config.n_positions
-    print(r)    # 모델이 입력받아 처리할 수 있는 최대 토큰 수 ?
+    # print(r)    # 모델이 입력받아 처리할 수 있는 최대 토큰 수 ?
 
     input_txt = "바람도 없는 공중에 수직의 파문을 내이며 고요히 떨어지는 오동잎은 누구의 발자취 입니까."
     tokens = tokenizer(input_txt).tokens()
@@ -456,19 +516,6 @@ def run_sft(cfg, model, tokenizer):
         tokenizer=tokenizer
     )
 
-    # 추론 및 생성 전략
-    generation_args = dict(
-        num_beams=4,            # 빔 서치의 너비. 클수록 더 좋은 문장을 생성할 확률이 높지만 속도가 느려짐.
-        repetition_penalty=2.0, # 반복 패널티. 1.0보다 크면 반복을 억제함.
-        no_repeat_ngram_size=4, # 값을 2~3으로 조정하면 단어 뭉치가 반복되는 것을 더 세밀하게 막을 수 있다.
-        eos_token_id=375,       # 문장 생성 종료 토큰
-        max_new_tokens=64,      # 생성할 최대 토큰 수
-        do_sample=True,         # sampling을 통해 더 다양한 문장을 생성한다.
-        top_k=50,               # 값을 40~50 정도로 설정하면 모델이 다음 단어를 선택할 때 확률이 높은 상위 50개 단어 중에서만 고르게 된다. 
-                                # (낮을수록 일관성↑, 높을수록 다양성↑)
-        early_stopping=True     # 조기 종료
-    )
-
     PROMPT_DICT = {
         "prompt_input": (
             "*** Instruction(명령어):\n{prompt}\n\n*** Response(응답):"
@@ -482,10 +529,16 @@ def run_sft(cfg, model, tokenizer):
 
     list_prompt = [PROMPT_DICT['prompt_input'].format_map({'prompt' : tmp}) for tmp in list_prompt]
 
-    list_result = generator(list_prompt, **generation_args)
-    for prompt, result in zip(list_prompt, list_result):
+    # list_result = generator(list_prompt, **generation_args)
+    list_results = generate_pipeline(list_prompt, cfg['sft_saved_dir'], tokenizer)
+
+    for result in list_results:
+        print(result)
         print()
-        print((result[0]['generated_text']))
+    # for prompt, result in zip(list_prompt, list_result):
+    #     print()
+    #     print(f"prompt: {prompt}")
+    #     print(f"result: {result}")
 
 
 # -----------------------------------------------------------------------------
@@ -754,13 +807,9 @@ def run_reward_model(cfg):
 # -----------------------------------------------------------------------------
 # 5. Proximal Policy Optimization (PPO)
 # -----------------------------------------------------------------------------
-
 @print_func_name
 def run_ppo(cfg, model, tokenizer):
-    # root_path = os.path.dirname(os.path.abspath(__file__))
     device = cfg['device']
-    # tokenizer_name = "skt/kogpt2-base-v2"
-
     ppo_model_path = os.path.join(cfg["root_path"], 'models/output_3_PPO')
     ppo_model_exists = os.path.exists(ppo_model_path)
 
@@ -773,14 +822,6 @@ def run_ppo(cfg, model, tokenizer):
             actor = GPTActor(pretrained=f'{cfg["root_path"]}/models/output_1_SFT', lora_rank=0).to(device)
 
         critic = GPTCritic(pretrained=f'{cfg["root_path"]}/models/output_2_RM', lora_rank=0).to(device)
-
-
-        # tokenizer = PreTrainedTokenizerFast.from_pretrained(
-        #     tokenizer_name,
-        #     bos_token='</s>', eos_token='</s>', unk_token='<unk>', pad_token='<pad>', mask_token='<mask>',
-        #     padding_side="right",
-        #     model_max_length=512,
-        # )
 
         initial_model = deepcopy(actor)
         reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
@@ -844,26 +885,6 @@ def run_ppo(cfg, model, tokenizer):
     else:
         print("⏩ PPO training skipped as pre-trained model was loaded.")
 
-
-
-
-
-
-    # 드디어 SFT, RM 그리고 PPO 학습이 모두 완료되었습니다.
-    # RLHF가 적용된 koGPT-2의 생성능력을 확인해볼까요?
-    def generation(input_text, model):
-        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(cfg['device'])
-        outputs = model.generate(input_ids,
-                                max_length=250,
-                                do_sample=True,
-                                top_k=50,
-                                top_p=0.95,
-                                num_return_sequences=1)
-        output = tokenizer.batch_decode(outputs[0], skip_special_tokens=True)[0]
-        print()
-        print(output)
-        return output
-
     PROMPT_DICT = {
         "prompt_input": (
             "*** Instruction(명령어):\n{prompt}\n\n*** Response(응답):"
@@ -878,11 +899,13 @@ def run_ppo(cfg, model, tokenizer):
 
     list_prompt = [PROMPT_DICT['prompt_input'].format_map({'prompt': tmp}) for tmp in list_prompt]
 
-    for input_text in list_prompt:
-        output = generation(input_text, actor)
+    # for input_text in list_prompt:
+    outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
+    # print(f"\n[Custom Generate Result]\n{output}")
 
-
-
+    for output in outputs:
+        print(output)
+        print("\n")
 
 cfg = {
     "model_name": "skt/kogpt2-base-v2",
@@ -910,8 +933,8 @@ tokenizer = PreTrainedTokenizerFast.from_pretrained(
 )
 
 step_02_show_info(cfg)
-show_base_model_and_dataset(cfg, model, tokenizer)
-show_sft_and_rm_dataset(cfg)
+# show_base_model_and_dataset(cfg, model, tokenizer)
+# show_sft_and_rm_dataset(cfg)
 run_sft(cfg, model, tokenizer)
 run_reward_model(cfg)
 run_ppo(cfg, model, tokenizer)
