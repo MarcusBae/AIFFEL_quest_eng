@@ -42,27 +42,30 @@
 # -----------------------------------------------------------------------------
 
 import os
+import json
+import logging
+import copy
+from copy import deepcopy
+import random
+import functools
+from typing import Optional, Dict, Sequence, List
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
-
+import pandas as pd
+import numpy as np
 
 import transformers
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import pandas as pd
-import numpy
-import json
-
-from typing import Optional, Dict, Sequence
-from dataclasses import dataclass
-from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerFast
-import pandas as pd
-import numpy
-import json
-import logging
-import copy
-
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForCausalLM, 
+    PreTrainedTokenizerFast,
+    GPT2Config,
+    GPT2Model,
+    pipeline
+)
 
 
 try:
@@ -167,28 +170,46 @@ def step_01_modify_files():
 
 step_01_modify_files()
 
-
 from chatgpt.dataset import RewardDataset
 from chatgpt.models.base import RewardModel
 from chatgpt.trainer.strategies import NaiveStrategy
 from chatgpt.trainer.rm import RewardModelTrainer
-from transformers.models.gpt2.configuration_gpt2 import GPT2Config
-from transformers.models.gpt2.modeling_gpt2 import GPT2Model
 from chatgpt.models.gpt import GPTActor, GPTCritic
 from chatgpt.trainer import PPOTrainer
 
-from copy import deepcopy
-import random
+# -----------------------------------------------------------------------------
+# Global Constants & Configuration
+# -----------------------------------------------------------------------------
 
-import functools
+PROMPT_TEMPLATE = "### Instruction(명령어):\n{prompt}\n\n### Response(응답):"
+
+# -----------------------------------------------------------------------------
+# Utility Functions
+# -----------------------------------------------------------------------------
+
+def clear_device_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+        torch.xpu.empty_cache()
+
+def load_jsonl(path):
+    if not os.path.exists(path):
+        logging.error(f"File not found: {path}")
+        return []
+    with open(path, "r", encoding='utf-8-sig') as f:
+        return json.load(f)
 
 def print_func_name(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        print(f"-------------------- {func.__name__}() ----------------------------------------")
+        print(f"\n" + "-"*20 + f" {func.__name__}() " + "-"*20)
         return func(*args, **kwargs)
     return wrapper
 
+
+
+# -----------------------------------------------------------------------------
 # Pipeline API - high level
 @print_func_name
 def generate_pipeline(prompts, model_path, tokenizer):
@@ -334,8 +355,7 @@ def show_sft_and_rm_dataset(cfg):
 
     # SFT DataSet - prompt, completion, tokens
     data_path_1_SFT = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl'
-    with open(data_path_1_SFT, "r", encoding='utf-8-sig') as json_file:
-        list_data_dict = json.load(json_file)
+    list_data_dict = load_jsonl(data_path_1_SFT)
 
     r = f'{len(list_data_dict):,}'
     print(r)
@@ -344,8 +364,7 @@ def show_sft_and_rm_dataset(cfg):
 
     # RM DataSet - prompt, completion_0, 1, 2, ranking
     data_path_2_RM = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl'
-    with open(data_path_2_RM, "r", encoding='utf-8-sig') as json_file:
-        list_data_dict = json.load(json_file)
+    list_data_dict = load_jsonl(data_path_2_RM)
 
     r = f'{len(list_data_dict):,}'
     print(r)
@@ -354,8 +373,7 @@ def show_sft_and_rm_dataset(cfg):
 
     # PPO (Proximal Policy Optimization) 학습에 쓰일 데이터 준비 - prompt only
     data_path_3_PPO = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl'
-    with open(data_path_3_PPO, "r", encoding='utf-8-sig') as json_file:
-        list_data_dict = json.load(json_file)
+    list_data_dict = load_jsonl(data_path_3_PPO)
 
     r = f'{len(list_data_dict):,}'
     print(r)
@@ -375,16 +393,9 @@ class SFT_dataset(Dataset):
         pattern_instruction = 'prompt'  # instruction
         pattern_output = 'completion'  # response
 
-        with open(data_path_1_SFT, "r", encoding='utf-8-sig') as json_file:
-            list_data_dict = json.load(json_file)
+        list_data_dict = load_jsonl(data_path_1_SFT)
 
-        PROMPT_DICT = {
-            "prompt_input": (
-                "### Instruction(명령어):\n{prompt}\n\n### Response(응답):"
-            )
-        }
-
-        prompt_input = PROMPT_DICT["prompt_input"]
+        prompt_input = PROMPT_TEMPLATE
 
         sources = []
         for example in list_data_dict:
@@ -456,10 +467,7 @@ class DataCollatorForSupervisedDataset(object):
 @print_func_name
 def run_sft(cfg, model, tokenizer):
     
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
-        torch.xpu.empty_cache()
+    clear_device_cache()
         
     # 학습용 배치 Batch 생성기
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
@@ -516,20 +524,13 @@ def run_sft(cfg, model, tokenizer):
         tokenizer=tokenizer
     )
 
-    PROMPT_DICT = {
-        "prompt_input": (
-            "*** Instruction(명령어):\n{prompt}\n\n*** Response(응답):"
-        )
-    }
-
-    list_prompt = ['불고기용 고기 한우에요?',
-                '리처드 닉슨이 43대 부통령직을 수행한 년도는?',
-                '시카고 오헤어 국제공항은 어디에 있어?',
-                '오늘 미세먼지 어때?']
-
-    list_prompt = [PROMPT_DICT['prompt_input'].format_map({'prompt' : tmp}) for tmp in list_prompt]
-
-    # list_result = generator(list_prompt, **generation_args)
+    list_prompt = [
+        '불고기용 고기 한우에요?',
+        '리처드 닉슨이 43대 부통령직을 수행한 년도는?',
+        '시카고 오헤어 국제공항은 어디에 있어?',
+        '오늘 미세먼지 어때?'
+    ]
+    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt' : tmp}) for tmp in list_prompt]
     list_results = generate_pipeline(list_prompt, cfg['sft_saved_dir'], tokenizer)
 
     for result in list_results:
@@ -602,8 +603,7 @@ def run_reward_model(cfg):
     # 2. 데이터셋 구성 (Pairwise Ranking)
     
     # kochatgpt_2_RM.jsonl - 각 프롬프트에 대한 응답 두 개(completion_0, completion_1), 선호도 순위(ranking)로 구성
-    with open(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl', "r", encoding='utf-8-sig') as json_file:
-        list_data_dict = json.load(json_file)
+    list_data_dict = load_jsonl(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl')
 
     # 3. 조합 생성: 2개의 답변에서 나올 수 있는 모든 쌍(Pair)
     total_data_ranking2chosen = []
@@ -773,7 +773,9 @@ def run_reward_model(cfg):
         output = model(input_ids)
         output_reward = output.cpu().detach().numpy()[0]
 
-        print('input: %s\nreward score: %.1f'%(input_text, output_reward))
+        # print('input: %s\nreward score: %.1f'%(input_text, output_reward))
+        print(f'input: {input_text}')
+        print(f'reward score: {output_reward:.1f}')
 
         return output_reward
 
@@ -798,10 +800,7 @@ def run_reward_model(cfg):
     # RLHF의 마지막 단계인 PPO 학습을 통해 살펴보도록 하겠습니다.
     # 여기서도 메모리 관리를 위해 한 번더 캐시를 비우고 넘어가겠습니다.
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
-        torch.xpu.empty_cache()
+    clear_device_cache()
 
 
 # -----------------------------------------------------------------------------
@@ -809,7 +808,9 @@ def run_reward_model(cfg):
 # -----------------------------------------------------------------------------
 @print_func_name
 def run_ppo(cfg, model, tokenizer):
+    # root_path = os.path.dirname(os.path.abspath(__file__))
     device = cfg['device']
+
     ppo_model_path = os.path.join(cfg["root_path"], 'models/output_3_PPO')
     ppo_model_exists = os.path.exists(ppo_model_path)
 
@@ -834,9 +835,8 @@ def run_ppo(cfg, model, tokenizer):
                                 (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
 
     # PPO 학습에 쓸 데이터를 불러와 토크나이징
-    with open(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl', "r", encoding='utf-8-sig') as json_file:
-        list_data_dict = json.load(json_file)
-        list_prompt = [tmp['prompt'] for tmp in list_data_dict]
+    list_data_dict = load_jsonl(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl')
+    list_prompt = [tmp['prompt'] for tmp in list_data_dict]
 
     def tokenize_fn(texts):
         batch = tokenizer(texts, return_tensors='pt', max_length=96, padding=True, truncation=True)
@@ -885,19 +885,13 @@ def run_ppo(cfg, model, tokenizer):
     else:
         print("⏩ PPO training skipped as pre-trained model was loaded.")
 
-    PROMPT_DICT = {
-        "prompt_input": (
-            "*** Instruction(명령어):\n{prompt}\n\n*** Response(응답):"
-        )
-    }
-
     list_prompt = [
         '불고기용 고기 한우에요?',
         '리처드 닉슨이 43대 부통령직을 수행한 년도는?',
-        '시카고 오헤어 국제공항은 어디에 있어',
-        '오늘 미세먼지 어때?']
-
-    list_prompt = [PROMPT_DICT['prompt_input'].format_map({'prompt': tmp}) for tmp in list_prompt]
+        '시카고 오헤어 국제공항은 어디에 있어?',
+        '오늘 미세먼지 어때?'
+    ]
+    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in list_prompt]
 
     # for input_text in list_prompt:
     outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
