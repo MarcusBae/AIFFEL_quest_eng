@@ -19,28 +19,6 @@
 # $ pip install datasets loralib trl
 # # pip install colossalai --upgrade
 
-# 공지
-# 1. 토크나이저가 오류
-#   허깅페이스에서 한국어 토크나이저를 여럿 제공할텐데요, 적당한 걸 찾아서 쓰시면 되겠습니다
-#   일단 저는 "monologg/koelectra-base-v3-discriminator" 이거로 교체를 했구요!
-#   이것보다 더 좋은 토크나이저들이 있을거에요
-
-#   응답이 AI...와 같이 깨져서 나오는 현상은
-#       skt/kogpt2-base-v2 모델과 토크나이저 설정이 맞지 않거나,
-#       특수 토큰 설정 과정에서 한국어 데딩 인코딩이 꼬였을 때 발생합니다.
-#   이를 해결하기 위해 KoGPT-2의 공식적인 권장 방식인 PreTrainedTokenizerFast를 사용하고,
-#   모델에 최적화된 특수 토큰(bos, eos, unk, pad, mask)을 정확히 설정하도록 변경
-
-
-
-# -----------------------------------------------------------------------------
-# 내가 궁금한 것, 여기서 중요한 것
-# 1. Ref 코드가 한 것과 Node 코드가 한 것.
-# 2. pre-trained - fine-tuning - RLHF - reward model 의 학습 과정
-# 3. 언어 모델의 정량적, 정성적 평가 방법
-# 4.
-# -----------------------------------------------------------------------------
-
 import os
 import json
 import logging
@@ -130,8 +108,6 @@ def print_func_name(func):
         return func(*args, **kwargs)
     return wrapper
 
-
-
 # -----------------------------------------------------------------------------
 # Pipeline API - high level
 @print_func_name
@@ -218,7 +194,7 @@ def step_02_show_info(cfg):
 @print_func_name
 def show_base_model_and_dataset(cfg, model, tokenizer):
 
-    # 베이스라인 모델 - kogpt-2의 일반적인 성능을 확인하기
+    # 베이스라인 모델일반적인 성능을 확인하기
     # print('--- 1 ------------------------------------------------')
     r = tokenizer.model_max_length  # 입력 최대 토큰 수
     r = model.config.n_positions    # 모델이 입력받아 처리할 수 있는 최대 토큰 수 ?
@@ -776,39 +752,43 @@ def run_ppo(cfg, model, tokenizer):
         print(output)
         print("\n")
 
-try:
-    root_path = os.path.dirname(os.path.abspath(__file__))
-except:
-    root_path = os.getcwd()
-    
-cfg = {
-    "model_name": "skt/kogpt2-base-v2",
-    # "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
-    "root_path": root_path,
+def main():
+    try:
+        root_path = os.path.dirname(os.path.abspath(__file__))
+    except:
+        root_path = os.getcwd()
+        
+    cfg = {
+        "model_name": "skt/kogpt2-base-v2",
+        # "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
+        "root_path": root_path,
 
-    "sft_output_dir": root_path + "/test",
-    "sft_saved_dir": root_path + "/models/output_1_SFT",
-    "sft_num_train_epochs": 1,
-    "sft_per_device_train_batch_size": 4,
-    "sft_per_device_eval_batch_size": 4,
-    "sft_warmup_steps": 5,
-    "sft_prediction_loss_only": True,
-    "sft_fp16": False # XPU sometimes has issues with fp16 in older versions or specific setups, let's try False or BF16
-}
+        "sft_output_dir": root_path + "/test",
+        "sft_saved_dir": root_path + "/models/output_1_SFT",
+        "sft_num_train_epochs": 1,
+        "sft_per_device_train_batch_size": 4,
+        "sft_per_device_eval_batch_size": 4,
+        "sft_warmup_steps": 5,
+        "sft_prediction_loss_only": True,
+        "sft_fp16": False # XPU sometimes has issues with fp16 in older versions or specific setups, let's try False or BF16
+    }
 
-# tokenizer, model 준비
-model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
-tokenizer = PreTrainedTokenizerFast.from_pretrained(
-    cfg["model_name"],
-    bos_token='</s>', eos_token='</s>', unk_token='<unk>', pad_token='<pad>', mask_token='<mask>',
-    padding_side="right",
-    model_max_length=512,
-)
+    # tokenizer, model 준비
+    model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+        cfg["model_name"],
+        bos_token='</s>', eos_token='</s>', unk_token='<unk>', pad_token='<pad>', mask_token='<mask>',
+        padding_side="right",
+        model_max_length=512,
+    )
 
-step_02_show_info(cfg)
-# show_base_model_and_dataset(cfg, model, tokenizer)
-# show_sft_and_rm_dataset(cfg)
-run_sft(cfg, model, tokenizer)
-run_reward_model(cfg)
-run_ppo(cfg, model, tokenizer)
+    step_02_show_info(cfg)
+    # show_base_model_and_dataset(cfg, model, tokenizer)
+    # show_sft_and_rm_dataset(cfg)
+    run_sft(cfg, model, tokenizer)
+    run_reward_model(cfg)
+    run_ppo(cfg, model, tokenizer)
+
+if __name__ == "__main__":
+    main()
