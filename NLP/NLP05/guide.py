@@ -201,15 +201,15 @@ def generate_custom(prompts, model, tokenizer, device=None):
 
 @print_func_name
 def step_02_show_info(cfg):
-    print("Torch version:{}".format(torch.__version__)) # Torch version:1.12.1
-    # print("Cuda version: {}".format(torch.version.cuda)) # Cuda version: 11.3
-    print("Device: {}".format(cfg['device']))
-    print("transformers version: {}".format(transformers.__version__)) # transformers 4.28.0
+    print(f"Torch version: {torch.__version__}") # Torch version:1.12.1
+    print(f"Device: {cfg['device']}")
+    print(f"transformers version: {transformers.__version__}") # transformers 4.28.0
     
     if "cuda" in str(cfg['device']):
-        print("GPU available: {}".format(torch.cuda.is_available()))
+        print(f"GPU available: {torch.cuda.is_available()}")
+        print(f"Cuda version: {torch.version.cuda}") # Cuda version: 11.3
     elif "xpu" in str(cfg['device']):
-        print("XPU available: {}".format(torch.xpu.is_available()))
+        print(f"XPU available: {torch.xpu.is_available()}")
     else:
         print("Using CPU")
 
