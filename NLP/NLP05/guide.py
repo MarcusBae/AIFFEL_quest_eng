@@ -63,20 +63,17 @@ import json
 import logging
 import copy
 
-from chatgpt.dataset import RewardDataset
-from chatgpt.models.base import RewardModel
-from chatgpt.trainer.strategies import NaiveStrategy
-from chatgpt.trainer.rm import RewardModelTrainer
-from transformers.models.gpt2.configuration_gpt2 import GPT2Config
-from transformers.models.gpt2.modeling_gpt2 import GPT2Model
+try:
+    root_path = os.path.dirname(os.path.abspath(__file__))
+except:
+    root_path = os.getcwd()
 
-import random
 
-def step_01_modify_files(cfg):
+def step_01_modify_files():
     modifications = [
         {
             # "file": "/content/chatgpt/trainer/callbacks/save_checkpoint.py",
-            "file": f"{cfg['root_path']}/chatgpt/trainer/callbacks/save_checkpoint.py",
+            "file": f"{root_path}/chatgpt/trainer/callbacks/save_checkpoint.py",
             "changes": [
                 {
                     "line": 3,
@@ -91,7 +88,7 @@ def step_01_modify_files(cfg):
             ],
         },
         {
-            "file": f"{cfg['root_path']}/chatgpt/trainer/strategies/__init__.py",
+            "file": f"{root_path}/chatgpt/trainer/strategies/__init__.py",
             "changes": [
                 {
                     "line": 1,
@@ -106,7 +103,7 @@ def step_01_modify_files(cfg):
             ],
         },
         {
-            "file": f"{cfg['root_path']}/chatgpt/dataset/reward_dataset.py",
+            "file": f"{root_path}/chatgpt/dataset/reward_dataset.py",
             "changes": [
                 {
                     "line": 3,
@@ -115,7 +112,7 @@ def step_01_modify_files(cfg):
             ],
         },
         {
-            "file": f"{cfg['root_path']}/chatgpt/trainer/base.py",
+            "file": f"{root_path}/chatgpt/trainer/base.py",
             "changes": [
                 {
                     "line": 8,
@@ -125,7 +122,7 @@ def step_01_modify_files(cfg):
             ]
         },
         {
-            "file": f"{cfg['root_path']}/chatgpt/trainer/rm.py",
+            "file": f"{root_path}/chatgpt/trainer/rm.py",
             "changes": [
                 {
                     "line": 8,
@@ -166,6 +163,20 @@ def step_01_modify_files(cfg):
 
     for mod in modifications:
         modify_file(mod["file"], mod["changes"])
+
+step_01_modify_files()
+
+
+from chatgpt.dataset import RewardDataset
+from chatgpt.models.base import RewardModel
+from chatgpt.trainer.strategies import NaiveStrategy
+from chatgpt.trainer.rm import RewardModelTrainer
+from transformers.models.gpt2.configuration_gpt2 import GPT2Config
+from transformers.models.gpt2.modeling_gpt2 import GPT2Model
+
+import random
+
+
 
 def step_02_show_info(cfg):
     print("Torch version:{}".format(torch.__version__)) # Torch version:1.12.1
@@ -866,10 +877,6 @@ def test_05():
 
 
 
-try:
-    root_path = os.path.dirname(os.path.abspath(__file__))
-except:
-    root_path = os.getcwd()
 
 cfg = {
     "model_name": "skt/kogpt2-base-v2",
@@ -896,7 +903,7 @@ tokenizer = PreTrainedTokenizerFast.from_pretrained(
     model_max_length=512,
 )
 
-step_01_modify_files(cfg)
+
 step_02_show_info(cfg)
 
 
