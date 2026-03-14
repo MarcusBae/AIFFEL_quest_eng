@@ -111,7 +111,8 @@ def print_func_name(func):
 def run_evaluation(cfg):
     model_paths = [cfg["sft_saved_dir"], cfg["ppo_saved_dir"]]
     common_args = {
-        "tokenizer": "skt/kogpt2-base-v2",
+         #"tokenizer": "skt/kogpt2-base-v2",
+         "tokenizer": cfg["sft_tokenizer"],
         "dtype": "float16",
         "tasks": "kobest_copa,kobest_hellaswag,kobest_boolq",
         "batch_size": "auto",
@@ -199,16 +200,10 @@ def generate_custom(prompts, model, tokenizer, device=None):
 @print_func_name
 def step_02_show_info(cfg):
     print(f"Torch version: {torch.__version__}") # Torch version:1.12.1
-    print(f"Device: {cfg['device']}")
     print(f"transformers version: {transformers.__version__}") # transformers 4.28.0
     
-    if "cuda" in str(cfg['device']):
-        print(f"GPU available: {torch.cuda.is_available()}")
-        print(f"Cuda version: {torch.version.cuda}") # Cuda version: 11.3
-    elif "xpu" in str(cfg['device']):
-        print(f"XPU available: {torch.xpu.is_available()}")
-    else:
-        print("Using CPU")
+    for k, v in cfg.items():
+        print(f"{k}: {v}")
 
 # -----------------------------------------------------------------------------
 # 2. Base model and Dataset for RLHF
@@ -771,8 +766,8 @@ def run_ppo(cfg, model, tokenizer):
         print("\n")
 
 def run_baseline():
-    model_name = "skt/kogpt2-base-v"
-    tcname = model_name.replace("/", "-") + "_try1"
+    model_name = "skt/kogpt2-base-v2"
+    tcname = model_name.replace("/", "-") + "_baseline"
 
     try:
         root_path = os.path.dirname(os.path.abspath(__file__))
@@ -780,7 +775,8 @@ def run_baseline():
         root_path = os.getcwd()
         
     cfg = {
-        "model_name": "skt/kogpt2-base-v2",
+        "model_name": model_name,
+        "sft_tokenizer": model_name,
         "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
         "root_path": root_path,
 
@@ -820,7 +816,7 @@ def run_baseline():
 
 
 def run_case1():
-    model_name = "skt/kogpt2-base-v"
+    model_name = "skt/kogpt2-base-v2"
     tcname = model_name.replace("/", "-") + "_try1"
 
     try:
@@ -830,6 +826,7 @@ def run_case1():
         
     cfg = {
         "model_name": model_name,
+        "sft_tokenizer": model_name,
         "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
         "root_path": root_path,
 
