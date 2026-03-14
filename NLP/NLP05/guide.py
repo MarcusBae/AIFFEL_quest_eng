@@ -108,6 +108,15 @@ def print_func_name(func):
         return func(*args, **kwargs)
     return wrapper
 
+def run_evaluation():
+    os.system("lm-eval --model hf \
+        --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype=\"float16\" \
+        --tasks kobest_copa,kobest_hellaswag,kobest_boolq \")
+
+    os.system("lm-eval --model hf \
+        --model_args pretrained=models/output_3_PPO,tokenizer=skt/kogpt2-base-v2,dtype=\"float16\" \
+        --tasks kobest_copa,kobest_hellaswag,kobest_boolq \")
+
 # -----------------------------------------------------------------------------
 # Pipeline API - high level
 @print_func_name
@@ -752,7 +761,7 @@ def run_ppo(cfg, model, tokenizer):
         print(output)
         print("\n")
 
-def main():
+def run_baseline():
     try:
         root_path = os.path.dirname(os.path.abspath(__file__))
     except:
@@ -760,10 +769,8 @@ def main():
         
     cfg = {
         "model_name": "skt/kogpt2-base-v2",
-        # "device": "cuda" if torch.cuda.is_available() else "cpu",
         "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
         "root_path": root_path,
-
         "sft_output_dir": root_path + "/test",
         "sft_saved_dir": root_path + "/models/output_1_SFT",
         "sft_num_train_epochs": 1,
@@ -771,10 +778,9 @@ def main():
         "sft_per_device_eval_batch_size": 4,
         "sft_warmup_steps": 5,
         "sft_prediction_loss_only": True,
-        "sft_fp16": False # XPU sometimes has issues with fp16 in older versions or specific setups, let's try False or BF16
+        "sft_fp16": False 
     }
 
-    # tokenizer, model 준비
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
     tokenizer = PreTrainedTokenizerFast.from_pretrained(
         cfg["model_name"],
@@ -790,5 +796,11 @@ def main():
     run_reward_model(cfg)
     run_ppo(cfg, model, tokenizer)
 
+
 if __name__ == "__main__":
-    main()
+    run_baseline()
+    run_evaluation()
+
+    
+
+

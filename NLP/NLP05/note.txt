@@ -1,3 +1,26 @@
+1. NODE Code Refactoring, Flow 확습
+    pre-trained - SFT - RM
+
+2. 평가 환경 준비 
+    * lm-eval-harness
+    * https://devocean.sk.com/blog/techBoardDetail.do?ID=166716&boardType=techBlog
+
+3. Base Line 성능 확인
+    * sft 결과 -> 찍기 수준, !!! 영어 시험지를 주다니,
+            --tasks mmlu,gsm8k \
+
+    * 한글 시험지 새로 주면 
+        !lm-eval --model hf \
+        --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype="float16" \
+        --tasks kobest_copa,kobest_hellaswag,kobest_boolq \
+
+
+
+4. 각종 기법 적용
+
+5. 
+
+
 
 0. ToDo 
     1. Ref 코드가 한 것과 Node 코드가 한 것.
@@ -7,6 +30,7 @@
 0. 준비
 
     - 토크나이저가 오류
+
 
 1. 리팩토링
 
@@ -31,8 +55,6 @@
         * Ranking Accuracy: 사람이 미리 매긴 선호도 순위와 Reward Model이 예측한 점수의 순위가 얼마나 일치하는지 측정합니다.
         * Reward Drift 모니터링: 강화 학습 과정에서 모델이 보상 점수만 높이려고 이상한 답변을 내놓는 'Reward Hacking'이 발생하는지 확인해야 합니다.    
 
-
     1. lm-evaluation-harness
-        
 
     2. LLM-as-a-Judge 및 단위 테스트: DeepEval
