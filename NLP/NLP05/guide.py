@@ -802,6 +802,9 @@ def run_baseline():
         model_max_length=512,
     )
 
+    run_evaluation(cfg)
+
+
     step_02_show_info(cfg)
     # show_base_model_and_dataset(cfg, model, tokenizer)
     # show_sft_and_rm_dataset(cfg)
