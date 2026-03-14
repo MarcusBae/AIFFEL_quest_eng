@@ -787,7 +787,7 @@ def run_baseline():
         "sft_output_dir": os.path.join(root_path, "test", tcname),
         "sft_saved_dir": os.path.join(root_path, "models", tcname + "_output_1_SFT"),
         "rm_saved_dir": os.path.join(root_path, "models", tcname + "_output_2_RM"),
-        "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO")
+        "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO"),
         "sft_output_dir": root_path + "/test/baseline",
 
         "sft_num_train_epochs": 1,
@@ -836,7 +836,7 @@ def run_case1():
         "sft_output_dir": os.path.join(root_path, "test", tcname),
         "sft_saved_dir": os.path.join(root_path, "models", tcname + "_output_1_SFT"),
         "rm_saved_dir": os.path.join(root_path, "models", tcname + "_output_2_RM"),
-        "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO")
+        "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO"),
 
         "sft_num_train_epochs": 3,              # 1 -> 3
         "sft_per_device_train_batch_size": 8,   # 4 -> 8
