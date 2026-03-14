@@ -111,11 +111,11 @@ def print_func_name(func):
 def run_evaluation():
     os.system("lm-eval --model hf \
         --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype=\"float16\" \
-        --tasks kobest_copa,kobest_hellaswag,kobest_boolq \")
+        --tasks kobest_copa,kobest_hellaswag,kobest_boolq --batch_size auto --limit 500")
 
     os.system("lm-eval --model hf \
         --model_args pretrained=models/output_3_PPO,tokenizer=skt/kogpt2-base-v2,dtype=\"float16\" \
-        --tasks kobest_copa,kobest_hellaswag,kobest_boolq \")
+        --tasks kobest_copa,kobest_hellaswag,kobest_boolq --batch_size auto --limit 500")
 
 # -----------------------------------------------------------------------------
 # Pipeline API - high level
@@ -801,6 +801,6 @@ if __name__ == "__main__":
     run_baseline()
     run_evaluation()
 
-    
+
 
 
