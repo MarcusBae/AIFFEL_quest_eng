@@ -17,7 +17,7 @@
 # # $ git clone https://github.com/airobotlab/KoChatGPT
 # $ cp -r ./KoChatGPT/colossalai_ChatGPT_230319/chatgpt ./chatgpt
 # $ pip install datasets loralib trl
-# # pip install colossalai --upgrade
+# $ pip install lm-eval
 
 import os
 import json
