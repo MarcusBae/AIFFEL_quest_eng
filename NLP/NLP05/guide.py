@@ -360,21 +360,31 @@ class SFT_dataset(Dataset):
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         return dict(input_ids=self.input_ids[i], labels=self.labels[i])
 
+
+# 하나의 학습용 배치(Batch) 생성. 
+#   - Padding(패딩) 작업 
 @dataclass
 class DataCollatorForSupervisedDataset(object):
+    # type hinting, @dataclass : parameter를 받는 생성자 대용 역할
     tokenizer: transformers.PreTrainedTokenizer
+
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        
+        # 이미 토크나이징 단계에서 input_ids에 padding_value가 포함되어 있다. 
+        # 하지만, torch.nn.utils.rnn.pad_sequence의 역할은 배치 내의 시퀀스들을 
+        # 가장 긴 시퀀스 길이에 맞춰 패딩하는 것이다. ???
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
 
-        # padding_value = -100 ?? 의미는 ?
+        # padding_value = -100 : 학습 시 padding 은 Loss 계산에서 제외
         labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value= -100)
+
         return dict(
             input_ids=input_ids,
             labels=labels,
-            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id), # 어디까지가 실제 데이터(1)이고 어디가 패딩(0)인지 표시
         )
 
 # SFT(Supervised Fine-Tuning) 수행 후 결과 확인
@@ -390,29 +400,17 @@ def run_sft(cfg, model, tokenizer):
         tokenizer=tokenizer
     )
 
-    # r = f'in : {train_dataset.input_ids[0]}'
-    # print(r)
-    # r = f'out: {train_dataset.labels[0]}'
-    # print(r)
-
-    # # train_dataset.input_ids[0]를 디코딩 하는 함수
-    # r = tokenizer.decode(train_dataset.input_ids[0])
-    # print(r)
-
-    # trainer 클래스 정의
-    # https://huggingface.co/docs/transformers/v4.28.1/en/main_classes/trainer#transformers.TrainingArguments
-    #
-    # 변경 추가등. .. 여기서 만지작 해야 한다. !!!
     training_args = transformers.TrainingArguments(
         output_dir=cfg['sft_output_dir'],
-        num_train_epochs=cfg['sft_num_train_epochs'],           # epoch 수
+        num_train_epochs=cfg['sft_num_train_epochs'],
         per_device_train_batch_size=cfg['sft_per_device_train_batch_size'],
         per_device_eval_batch_size=cfg['sft_per_device_eval_batch_size'],
         warmup_steps=cfg['sft_warmup_steps'],
         prediction_loss_only=cfg['sft_prediction_loss_only'],   
-        fp16 = cfg['sft_fp16']                                  # 메모리 절약
+        fp16 = cfg['sft_fp16']
     )
 
+    # Trainer : 학습 파이프라인 자동화 (Loop, Optimization, Logging)
     trainer = transformers.Trainer(
         model=model,
         args=training_args,
@@ -420,7 +418,6 @@ def run_sft(cfg, model, tokenizer):
         train_dataset=train_dataset
     )
 
-    # if not os.path.exists(f"{cfg['sft_saved_dir']}"):
     if not os.path.exists(os.path.join(cfg['sft_saved_dir'], 'config.json')):
         if not os.path.exists(cfg['sft_saved_dir']):
             os.makedirs(cfg['sft_saved_dir'])
@@ -430,24 +427,19 @@ def run_sft(cfg, model, tokenizer):
         print(f"SFT model already exists: {cfg['sft_saved_dir']}")
 
     # 문장 생성 능력 확인위한 pipleline generator 생성
-    # Text generation strategies
-    generator = transformers.pipeline(
-        'text-generation',
-        model=cfg['sft_saved_dir'],
-        tokenizer=tokenizer
-    )
+    # generator = transformers.pipeline(
+    #     'text-generation',
+    #     model=cfg['sft_saved_dir'],
+    #     tokenizer=tokenizer
+    # )
 
-    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt' : tmp}) for tmp in DEFAULT_TEST_PROMPTS]
-    list_results = generate_pipeline(list_prompt, cfg['sft_saved_dir'], tokenizer)
+    # list_prompt = [PROMPT_TEMPLATE.format_map({'prompt' : tmp}) for tmp in DEFAULT_TEST_PROMPTS]
+    # list_results = generate_pipeline(list_prompt, cfg['sft_saved_dir'], tokenizer)
 
-    for result in list_results:
-        print(result)
-        print()
     # for prompt, result in zip(list_prompt, list_result):
     #     print()
     #     print(f"prompt: {prompt}")
     #     print(f"result: {result}")
-
 
 # -----------------------------------------------------------------------------
 # 4. Reward Model
@@ -767,7 +759,7 @@ def run_ppo(cfg, model, tokenizer):
 def run_baseline():
     """ NODE baseline: 그냥 찍는 수준 """
 
-    model_name = "skt/kogpt2-base-v2"
+    model_name = "skt/kogpt2-base-v2"                       # V
     tcname = model_name.replace("/", "-") + "_baseline"
 
     try:
@@ -776,7 +768,7 @@ def run_baseline():
         root_path = os.getcwd()
         
     cfg = {
-        "model_name": model_name,
+        "model_name": model_name,                       # V
         "sft_tokenizer": model_name,
         "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
         "root_path": root_path,
@@ -785,21 +777,20 @@ def run_baseline():
         "sft_saved_dir": os.path.join(root_path, "models", tcname + "_output_1_SFT"),
         "rm_saved_dir": os.path.join(root_path, "models", tcname + "_output_2_RM"),
         "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO"),
-        "sft_output_dir": root_path + "/test/baseline",
-
-        "sft_num_train_epochs": 1,
-        "sft_per_device_train_batch_size": 4,
-        "sft_per_device_eval_batch_size": 4,
-        "sft_warmup_steps": 5,
-        "sft_prediction_loss_only": True,
-        "sft_fp16": False, 
-
-        "rm_batch_size": 4,
-        "rm_max_epochs": 1,
 
         "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
         "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
         "data_path_3_PPO": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl"),
+
+        "sft_num_train_epochs": 1,              # V
+        "sft_per_device_train_batch_size": 4,   # V
+        "sft_per_device_eval_batch_size": 4,    # v 
+        "sft_warmup_steps": 5,                  # V 해당 step 동안 학습률을 0 -> 목표값까지 증가
+        "sft_prediction_loss_only": True,       # V 학습/평가 시 손실값(Loss)만 계산할지 예측값(Logits/Metrics)까지 계산할지 - 일단 Fix 
+        "sft_fp16": False,                      # 메모리 절약
+
+        "rm_batch_size": 4,                     # V
+        "rm_max_epochs": 1,                     # V
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -841,19 +832,19 @@ def run_case1():
         "rm_saved_dir": os.path.join(root_path, "models", tcname + "_output_2_RM"),
         "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO"),
 
+        "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
+        "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
+        "data_path_3_PPO": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl"),
+
         "sft_num_train_epochs": 3,              # 1 -> 3
         "sft_per_device_train_batch_size": 8,   # 4 -> 8 : batch size 늘리면 효과는 좋음. ->  gradient가 안정적으로 계산되기 때문
         "sft_per_device_eval_batch_size": 8,    # 4 -> 8 : eval batch size는 메모리 사용량에 영향이 없음. 왜냐하면 eval은 학습이 아니기 때문 ?
-        "sft_warmup_steps": 10,                 # 5 -> 10 : warmup steps 늘리면 효과는 좋음. ->  gradient가 안정적으로 계산되기 때문
+        "sft_warmup_steps": 10,                 # 5 -> 10 : 
         "sft_prediction_loss_only": True,
         "sft_fp16": False,
 
         "rm_batch_size": 4,
         "rm_max_epochs": 1,
-
-        "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
-        "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
-        "data_path_3_PPO": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl"),
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -865,7 +856,8 @@ def run_case1():
     )
 
     step_02_show_info(cfg)
-    # show_base_model_and_dataset(cfg, model, tokenizer)
+    # show_base_model_and_dataset(cfg, model
+    # , tokenizer)
     # show_sft_and_rm_dataset(cfg)
     run_sft(cfg, model, tokenizer)
     run_reward_model(cfg, tokenizer)

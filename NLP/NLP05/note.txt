@@ -1,5 +1,6 @@
-1. NODE Code Refactoring, Flow 확습
-    pre-trained - SFT - RM
+1. NODE Code 리팩토링 -> 파라미터 변경으로 테스트 쉽게 하려고 
+
+2. Fow 확습
 
 2. 평가 환경 준비 
     * lm-eval-harness
@@ -9,16 +10,26 @@
     * sft 결과 -> 찍기 수준, !!! 영어 시험지를 주다니,
             --tasks mmlu,gsm8k \
 
-    * 한글 시험지 새로 주면 
+    * 한글 시험지 새로 주면 점수 출력 확인 
         !lm-eval --model hf \
         --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype="float16" \
         --tasks kobest_copa,kobest_hellaswag,kobest_boolq \
 
-
 4. 각종 기법 적용
+    1. SFT Param 변경
+    2. RM Param 변경
+    3. PPO Param 변경
 
-5. 
 
+5. 에러 
+    1. 토크나이저가 오류
+    2. 
+
+
+5. 회고, 배운것들.
+    1. .ipynb + .py로 효율 상승
+    2. 하드코딩 줄일 수록 테스트 유연성 증가함 확인
+    3.  
 
 
 0. ToDo 
@@ -26,12 +37,6 @@
     2. pre-trained - fine-tuning - RLHF - reward model 의 학습 과정
     3. 언어 모델의 정량적, 정성적 평가 방법
 
-0. 준비
-
-    - 토크나이저가 오류
-
-
-1. 리팩토링
 
 2. 평가 메트릭 적용
     1. 정량적 평가 (Benchmarks)
