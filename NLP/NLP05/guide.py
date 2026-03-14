@@ -16,8 +16,7 @@
 # 1. 준비
 # # $ git clone https://github.com/airobotlab/KoChatGPT
 # $ cp -r ./KoChatGPT/colossalai_ChatGPT_230319/chatgpt ./chatgpt
-# $ pip install datasets loralib trl
-# $ pip install lm-eval
+# $ pip install lm-eval loralib
 
 import os
 import json
@@ -624,21 +623,21 @@ def run_reward_model(cfg, tokenizer):
     print(train_data[idx]['rejected'])
 
     # Reward Model 학습
-    if not os.path.exists(os.path.join(cfg['output_path_2_RM'], 'reward_model.pt')):
+    if not os.path.exists(os.path.join(cfg['rm_saved_dir'], 'reward_model.pt')):
         trainer = RewardModelTrainer(model=model,
-                                 strategy=NaiveStrategy(),
-                                 optim=torch.optim.Adam(model.parameters(), lr=5e-5),
-                                 train_dataset=train_dataset,
-                                 eval_dataset=eval_dataset,
-                                 batch_size=4,
-                                 max_epochs=1)
+                                strategy=NaiveStrategy(),
+                                optim=torch.optim.Adam(model.parameters(), lr=5e-5),
+                                train_dataset=train_dataset,
+                                eval_dataset=eval_dataset,
+                                batch_size=cfg['rm_batch_size'],
+                                max_epochs=cfg['rm_max_epochs'])
         trainer.fit(use_lora=0)
-        model.save_pretrained(cfg['output_path_2_RM'])
+        model.save_pretrained(cfg['rm_saved_dir'])
     else:
         # 권장 방법: 커스텀 클래스로 로드하고 state_dict 적용
         with NaiveStrategy().model_init_context():
             model = GPTRM_custom(pretrained=cfg['model_name'], lora_rank=0, tokenizer=tokenizer)
-            state_dict = torch.load(f'{cfg["root_path"]}/models/output_2_RM/reward_model.pt', map_location=cfg['device'])
+            state_dict = torch.load(os.path.join(cfg['rm_saved_dir'], 'reward_model.pt'), map_location=cfg['device'])
             model.load_state_dict(state_dict)
             model = model.to(cfg['device'])
 
@@ -685,18 +684,15 @@ def run_ppo(cfg, model, tokenizer):
 
     device = cfg['device']
 
-    ppo_model_path = os.path.join(cfg['output_path_3_PPO'])
-    ppo_model_exists = os.path.exists(ppo_model_path)
-
     with NaiveStrategy().model_init_context():
-        if ppo_model_exists:
+        if os.path.exists(cfg['ppo_saved_dir']):
             #print(f"✅ Loading pre-trained PPO model from {ppo_model_path}")
-            actor = GPTActor(pretrained=ppo_model_path, lora_rank=0).to(device)
+            actor = GPTActor(pretrained=cfg['ppo_saved_dir'], lora_rank=0).to(device)
         else:
             #print(f"🚀 Loading SFT model for PPO training from {cfg["root_path"]}/models/output_1_SFT")
-            actor = GPTActor(pretrained=cfg['output_path_1_SFT'], lora_rank=0).to(device)
+            actor = GPTActor(pretrained=cfg['sft_saved_dir'], lora_rank=0).to(device)
 
-        critic = GPTCritic(pretrained=cfg['output_path_2_RM'], lora_rank=0).to(device)
+        critic = GPTCritic(pretrained=cfg['rm_saved_dir'], lora_rank=0).to(device)
 
         initial_model = deepcopy(actor)
         reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
@@ -746,14 +742,17 @@ def run_ppo(cfg, model, tokenizer):
     # PPO의 loss function : chatgpt/models/loss.py PolicyLoss, ValueLoss class 에서 정의
 
     # PPO 학습
-    if not os.path.exists(os.path.join(ppo_model_path, 'config.json')):
+    if not os.path.exists(os.path.join(cfg['ppo_saved_dir'], 'config.json')):
+        if not os.path.exists(cfg['ppo_saved_dir']):
+        os.makedirs(cfg['ppo_saved_dir'])
+
         print("⏳ Starting PPO training...")
         trainer.fit(list_prompt,
                 num_episodes=10,
                 max_timesteps=3,
                 update_timesteps=3)
-
-        actor.model.save_pretrained(cfg['output_path_3_PPO'])
+    
+        actor.model.save_pretrained(cfg['ppo_saved_dir'])
         print("✅ PPO training completed and model saved.")
     else:
         print("⏩ PPO training skipped as pre-trained model was loaded.")
@@ -766,6 +765,8 @@ def run_ppo(cfg, model, tokenizer):
         print("\n")
 
 def run_baseline():
+    """ NODE baseline: 그냥 찍는 수준 """
+
     model_name = "skt/kogpt2-base-v2"
     tcname = model_name.replace("/", "-") + "_baseline"
 
@@ -793,6 +794,9 @@ def run_baseline():
         "sft_prediction_loss_only": True,
         "sft_fp16": False, 
 
+        "rm_batch_size": 4,
+        "rm_max_epochs": 1,
+
         "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
         "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
         "data_path_3_PPO": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl"),
@@ -816,6 +820,8 @@ def run_baseline():
 
 
 def run_case1():
+    """ SFT 관련 param 조정 """
+
     model_name = "skt/kogpt2-base-v2"
     tcname = model_name.replace("/", "-") + "_try1"
 
@@ -836,11 +842,14 @@ def run_case1():
         "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO"),
 
         "sft_num_train_epochs": 3,              # 1 -> 3
-        "sft_per_device_train_batch_size": 8,   # 4 -> 8
-        "sft_per_device_eval_batch_size": 8,    # 4 -> 8
-        "sft_warmup_steps": 5,
+        "sft_per_device_train_batch_size": 8,   # 4 -> 8 : batch size 늘리면 효과는 좋음. ->  gradient가 안정적으로 계산되기 때문
+        "sft_per_device_eval_batch_size": 8,    # 4 -> 8 : eval batch size는 메모리 사용량에 영향이 없음. 왜냐하면 eval은 학습이 아니기 때문 ?
+        "sft_warmup_steps": 10,                 # 5 -> 10 : warmup steps 늘리면 효과는 좋음. ->  gradient가 안정적으로 계산되기 때문
         "sft_prediction_loss_only": True,
         "sft_fp16": False,
+
+        "rm_batch_size": 4,
+        "rm_max_epochs": 1,
 
         "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
         "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
@@ -862,6 +871,10 @@ def run_case1():
     run_reward_model(cfg, tokenizer)
     run_ppo(cfg, model, tokenizer)
     run_evaluation(cfg)
+
+def run_case2():
+
+
 
 
 if __name__ == "__main__":
