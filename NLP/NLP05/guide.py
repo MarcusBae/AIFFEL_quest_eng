@@ -744,7 +744,7 @@ def run_ppo(cfg, model, tokenizer):
     # PPO 학습
     if not os.path.exists(os.path.join(cfg['ppo_saved_dir'], 'config.json')):
         if not os.path.exists(cfg['ppo_saved_dir']):
-        os.makedirs(cfg['ppo_saved_dir'])
+            os.makedirs(cfg['ppo_saved_dir'])
 
         print("⏳ Starting PPO training...")
         trainer.fit(list_prompt,
@@ -871,10 +871,6 @@ def run_case1():
     run_reward_model(cfg, tokenizer)
     run_ppo(cfg, model, tokenizer)
     run_evaluation(cfg)
-
-def run_case2():
-
-
 
 
 if __name__ == "__main__":
