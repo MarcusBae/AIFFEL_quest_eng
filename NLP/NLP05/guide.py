@@ -277,8 +277,7 @@ def show_base_model_and_dataset(cfg, model, tokenizer):
 def show_sft_and_rm_dataset(cfg):
 
     # SFT DataSet - prompt, completion, tokens
-    data_path_1_SFT = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl'
-    list_data_dict = load_jsonl(data_path_1_SFT)
+    list_data_dict = load_jsonl(cfg['data_path_1_SFT'])
 
     r = f'{len(list_data_dict):,}'
     print(r)
@@ -286,8 +285,7 @@ def show_sft_and_rm_dataset(cfg):
     print(r)
 
     # RM DataSet - prompt, completion_0, 1, 2, ranking
-    data_path_2_RM = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl'
-    list_data_dict = load_jsonl(data_path_2_RM)
+    list_data_dict = load_jsonl(cfg['data_path_2_RM'])
 
     r = f'{len(list_data_dict):,}'
     print(r)
@@ -295,8 +293,7 @@ def show_sft_and_rm_dataset(cfg):
     print(r)
 
     # PPO (Proximal Policy Optimization) 학습에 쓰일 데이터 준비 - prompt only
-    data_path_3_PPO = f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl'
-    list_data_dict = load_jsonl(data_path_3_PPO)
+    list_data_dict = load_jsonl(cfg['data_path_3_PPO'])
 
     r = f'{len(list_data_dict):,}'
     print(r)
@@ -395,7 +392,7 @@ def run_sft(cfg, model, tokenizer):
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
 
     train_dataset = SFT_dataset(
-        data_path_1_SFT=f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl',
+        data_path_1_SFT=cfg['data_path_1_SFT'],
         tokenizer=tokenizer
     )
 
@@ -519,7 +516,7 @@ def run_reward_model(cfg, tokenizer):
     # 2. 데이터셋 구성 (Pairwise Ranking)
     
     # kochatgpt_2_RM.jsonl - 각 프롬프트에 대한 응답 두 개(completion_0, completion_1), 선호도 순위(ranking)로 구성
-    list_data_dict = load_jsonl(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl')
+    list_data_dict = load_jsonl(cfg['data_path_2_RM'])
 
     # 3. 조합 생성: 2개의 답변에서 나올 수 있는 모든 쌍(Pair)
     total_data_ranking2chosen = prepare_pairwise_data(list_data_dict)
@@ -632,7 +629,7 @@ def run_reward_model(cfg, tokenizer):
     print(train_data[idx]['rejected'])
 
     # Reward Model 학습
-    if not os.path.exists(os.path.join(f'{cfg["root_path"]}/models/output_2_RM', 'reward_model.pt')):
+    if not os.path.exists(os.path.join(cfg['output_path_2_RM'], 'reward_model.pt')):
         trainer = RewardModelTrainer(model=model,
                                  strategy=NaiveStrategy(),
                                  optim=torch.optim.Adam(model.parameters(), lr=5e-5),
@@ -641,7 +638,7 @@ def run_reward_model(cfg, tokenizer):
                                  batch_size=4,
                                  max_epochs=1)
         trainer.fit(use_lora=0)
-        model.save_pretrained(f'{cfg["root_path"]}/models/output_2_RM')
+        model.save_pretrained(cfg['output_path_2_RM'])
     else:
         # 권장 방법: 커스텀 클래스로 로드하고 state_dict 적용
         with NaiveStrategy().model_init_context():
@@ -693,7 +690,7 @@ def run_ppo(cfg, model, tokenizer):
 
     device = cfg['device']
 
-    ppo_model_path = os.path.join(cfg["root_path"], 'models/output_3_PPO')
+    ppo_model_path = os.path.join(cfg['output_path_3_PPO'])
     ppo_model_exists = os.path.exists(ppo_model_path)
 
     with NaiveStrategy().model_init_context():
@@ -702,9 +699,9 @@ def run_ppo(cfg, model, tokenizer):
             actor = GPTActor(pretrained=ppo_model_path, lora_rank=0).to(device)
         else:
             #print(f"🚀 Loading SFT model for PPO training from {cfg["root_path"]}/models/output_1_SFT")
-            actor = GPTActor(pretrained=f'{cfg["root_path"]}/models/output_1_SFT', lora_rank=0).to(device)
+            actor = GPTActor(pretrained=cfg['output_path_1_SFT'], lora_rank=0).to(device)
 
-        critic = GPTCritic(pretrained=f'{cfg["root_path"]}/models/output_2_RM', lora_rank=0).to(device)
+        critic = GPTCritic(pretrained=cfg['output_path_2_RM'], lora_rank=0).to(device)
 
         initial_model = deepcopy(actor)
         reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
@@ -716,7 +713,7 @@ def run_ppo(cfg, model, tokenizer):
                                 (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
 
     # PPO 학습에 쓸 데이터를 토크나이징
-    list_data_dict = load_jsonl(f'{cfg["root_path"]}/KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl')
+    list_data_dict = load_jsonl(cfg['data_path_3_PPO'])
     list_prompt = [tmp['prompt'] for tmp in list_data_dict]
 
     def tokenize_fn(texts):
@@ -761,7 +758,7 @@ def run_ppo(cfg, model, tokenizer):
                 max_timesteps=3,
                 update_timesteps=3)
 
-        actor.model.save_pretrained('models/output_3_PPO')
+        actor.model.save_pretrained(cfg['output_path_3_PPO'])
         print("✅ PPO training completed and model saved.")
     else:
         print("⏩ PPO training skipped as pre-trained model was loaded.")
@@ -774,6 +771,9 @@ def run_ppo(cfg, model, tokenizer):
         print("\n")
 
 def run_baseline():
+    model_name = "skt/kogpt2-base-v"
+    tcname = model_name.replace("/", "-") + "_try1"
+
     try:
         root_path = os.path.dirname(os.path.abspath(__file__))
     except:
@@ -783,15 +783,23 @@ def run_baseline():
         "model_name": "skt/kogpt2-base-v2",
         "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
         "root_path": root_path,
-        "sft_output_dir": root_path + "/test",
-        "sft_saved_dir": root_path + "/models/output_1_SFT",
+
+        "sft_output_dir": os.path.join(root_path, "test", tcname),
+        "sft_saved_dir": os.path.join(root_path, "models", tcname + "_output_1_SFT"),
+        "rm_saved_dir": os.path.join(root_path, "models", tcname + "_output_2_RM"),
+        "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO")
+        "sft_output_dir": root_path + "/test/baseline",
+
         "sft_num_train_epochs": 1,
         "sft_per_device_train_batch_size": 4,
         "sft_per_device_eval_batch_size": 4,
         "sft_warmup_steps": 5,
         "sft_prediction_loss_only": True,
         "sft_fp16": False, 
-        "ppo_saved_dir": root_path + "/models/output_3_PPO"
+
+        "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
+        "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
+        "data_path_3_PPO": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl"),
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -802,9 +810,6 @@ def run_baseline():
         model_max_length=512,
     )
 
-    run_evaluation(cfg)
-
-
     step_02_show_info(cfg)
     # show_base_model_and_dataset(cfg, model, tokenizer)
     # show_sft_and_rm_dataset(cfg)
@@ -814,25 +819,35 @@ def run_baseline():
     run_evaluation(cfg)
 
 
-def run_upgrade():
+def run_case1():
+    model_name = "skt/kogpt2-base-v"
+    tcname = model_name.replace("/", "-") + "_try1"
+
     try:
         root_path = os.path.dirname(os.path.abspath(__file__))
     except:
         root_path = os.getcwd()
         
     cfg = {
-        "model_name": "skt/kogpt2-base-v2",
+        "model_name": model_name,
         "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
         "root_path": root_path,
-        "sft_output_dir": root_path + "/test",
-        "sft_saved_dir": root_path + "/models/output_1_SFT",
-        "sft_num_train_epochs": 3,
-        "sft_per_device_train_batch_size": 8,
-        "sft_per_device_eval_batch_size": 8,
+
+        "sft_output_dir": os.path.join(root_path, "test", tcname),
+        "sft_saved_dir": os.path.join(root_path, "models", tcname + "_output_1_SFT"),
+        "rm_saved_dir": os.path.join(root_path, "models", tcname + "_output_2_RM"),
+        "ppo_saved_dir": os.path.join(root_path, "models", tcname + "_output_3_PPO")
+
+        "sft_num_train_epochs": 3,              # 1 -> 3
+        "sft_per_device_train_batch_size": 8,   # 4 -> 8
+        "sft_per_device_eval_batch_size": 8,    # 4 -> 8
         "sft_warmup_steps": 5,
         "sft_prediction_loss_only": True,
         "sft_fp16": False,
-        "ppo_saved_dir": root_path + "/models/output_3_PPO"
+
+        "data_path_1_SFT": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_1_SFT.jsonl"),
+        "data_path_2_RM": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_2_RM.jsonl"),
+        "data_path_3_PPO": os.path.join(root_path, "KoChatGPT/data_kochatgpt/kochatgpt_3_PPO.jsonl"),
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -854,6 +869,5 @@ def run_upgrade():
 
 if __name__ == "__main__":
     run_baseline()
-
-    run_upgrade()
+    run_case1()
 
