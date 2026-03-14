@@ -108,14 +108,26 @@ def print_func_name(func):
         return func(*args, **kwargs)
     return wrapper
 
-def run_evaluation():
-    os.system("lm-eval --model hf \
-        --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype=\"float16\" \
-        --tasks kobest_copa,kobest_hellaswag,kobest_boolq --batch_size auto --limit 500")
+def run_evaluation(cfg):
+    model_paths = [cfg["sft_saved_dir"], cfg["ppo_saved_dir"]]
+    common_args = {
+        "tokenizer": "skt/kogpt2-base-v2",
+        "dtype": "float16",
+        "tasks": "kobest_copa,kobest_hellaswag,kobest_boolq",
+        "batch_size": "auto",
+        "limit": 500
+    }
 
-    os.system("lm-eval --model hf \
-        --model_args pretrained=models/output_3_PPO,tokenizer=skt/kogpt2-base-v2,dtype=\"float16\" \
-        --tasks kobest_copa,kobest_hellaswag,kobest_boolq --batch_size auto --limit 500")
+    for path in model_paths:
+        script = (
+            f"lm-eval --model hf "
+            f"--model_args pretrained={path},tokenizer={common_args['tokenizer']},dtype={common_args['dtype']} "
+            f"--tasks {common_args['tasks']} "
+            f"--batch_size={common_args['batch_size']} "
+            f"--limit={common_args['limit']}"
+        )
+        print(f"🚀 Running evaluation for: {path}")
+        os.system(script)
 
 # -----------------------------------------------------------------------------
 # Pipeline API - high level
@@ -778,7 +790,8 @@ def run_baseline():
         "sft_per_device_eval_batch_size": 4,
         "sft_warmup_steps": 5,
         "sft_prediction_loss_only": True,
-        "sft_fp16": False 
+        "sft_fp16": False, 
+        "ppo_saved_dir": root_path + "/models/output_3_PPO"
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -795,9 +808,49 @@ def run_baseline():
     run_sft(cfg, model, tokenizer)
     run_reward_model(cfg, tokenizer)
     run_ppo(cfg, model, tokenizer)
+    run_evaluation(cfg)
+
+
+def run_upgrade():
+    try:
+        root_path = os.path.dirname(os.path.abspath(__file__))
+    except:
+        root_path = os.getcwd()
+        
+    cfg = {
+        "model_name": "skt/kogpt2-base-v2",
+        "device": torch.device("xpu" if torch.xpu.is_available() else "cuda" if torch.cuda.is_available() else "cpu"),
+        "root_path": root_path,
+        "sft_output_dir": root_path + "/test",
+        "sft_saved_dir": root_path + "/models/output_1_SFT",
+        "sft_num_train_epochs": 3,
+        "sft_per_device_train_batch_size": 8,
+        "sft_per_device_eval_batch_size": 8,
+        "sft_warmup_steps": 5,
+        "sft_prediction_loss_only": True,
+        "sft_fp16": False,
+        "ppo_saved_dir": root_path + "/models/output_3_PPO"
+    }
+
+    model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
+    tokenizer = PreTrainedTokenizerFast.from_pretrained(
+        cfg["model_name"],
+        bos_token='</s>', eos_token='</s>', unk_token='<unk>', pad_token='<pad>', mask_token='<mask>',
+        padding_side="right",
+        model_max_length=512,
+    )
+
+    step_02_show_info(cfg)
+    # show_base_model_and_dataset(cfg, model, tokenizer)
+    # show_sft_and_rm_dataset(cfg)
+    run_sft(cfg, model, tokenizer)
+    run_reward_model(cfg, tokenizer)
+    run_ppo(cfg, model, tokenizer)
+    run_evaluation(cfg)
 
 
 if __name__ == "__main__":
     run_baseline()
-    run_evaluation()
+
+    run_upgrade()
 

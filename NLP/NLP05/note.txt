@@ -15,7 +15,6 @@
         --tasks kobest_copa,kobest_hellaswag,kobest_boolq \
 
 
-
 4. 각종 기법 적용
 
 5. 
