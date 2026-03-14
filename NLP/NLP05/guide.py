@@ -489,7 +489,7 @@ class GPTRM_custom(RewardModel):
 
 # Step 2 - (Reward Model, RM) 학습, 추론
 @print_func_name
-def run_reward_model(cfg):
+def run_reward_model(cfg, tokenizer):
 
     # 1. 환경 설정 및 모델 초기화
     if torch.cuda.is_available():
@@ -793,14 +793,11 @@ def run_baseline():
     # show_base_model_and_dataset(cfg, model, tokenizer)
     # show_sft_and_rm_dataset(cfg)
     run_sft(cfg, model, tokenizer)
-    run_reward_model(cfg)
+    run_reward_model(cfg, tokenizer)
     run_ppo(cfg, model, tokenizer)
 
 
 if __name__ == "__main__":
     run_baseline()
     run_evaluation()
-
-
-
 
