@@ -1,33 +1,31 @@
-1. NODE Code 리팩토링 -> 파라미터 변경으로 테스트 쉽게 하려고 
+### Project - KoChatGPT 업그레이드 
 
-2. Fow 확습
+작업 순서 
+
+1. NODE Code 리팩토링 : 파라미터 변경으로 테스트 쉽게 하기 
 
 2. 평가 환경 준비 
     * lm-eval-harness
-    * https://devocean.sk.com/blog/techBoardDetail.do?ID=166716&boardType=techBlog
+    * 참조 : https://devocean.sk.com/blog/techBoardDetail.do?ID=166716&boardType=techBlog
 
 3. Base Line 성능 확인
-    * sft 결과 -> 찍기 수준, !!! 영어 시험지를 주다니,
-            --tasks mmlu,gsm8k \
 
-    * 한글 시험지 새로 주면 점수 출력 확인 
-        !lm-eval --model hf \
-        --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype="float16" \
-        --tasks kobest_copa,kobest_hellaswag,kobest_boolq \
-
-4. 성능 지표 공부 
-     
-
-5. 각종 기법 적용
+4. 각종 기법 적용 중
     1. SFT Param 변경
     2. RM Param 변경
     3. PPO Param 변경
 
-
 5. 회고, 배운것들.
     1. .ipynb + .py로 효율 상승
     2. 하드코딩 줄일 수록 테스트 유연성 증가함 확인
-    3.  
+
+
+
+
+
+
+
+
 
 
 0. ToDo 
