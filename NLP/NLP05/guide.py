@@ -368,6 +368,8 @@ class DataCollatorForSupervisedDataset(object):
     # type hinting, @dataclass : parameter를 받는 생성자 대용 역할
     tokenizer: transformers.PreTrainedTokenizer
 
+    # Sequence : 순서가 있는 시퀀스 - list, tuple
+    # instances : batch_size 만큼의 데이터, SFT_dataset에서 반환된 데이터
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
         
@@ -448,12 +450,12 @@ def run_sft(cfg, model, tokenizer):
 # GPTRM_custom: GPT 모델 뒤에 Reward를 출력하기 위한 Scalar Head(Linear layer)가 붙은 커스텀 모델입니다.
 class GPTRM_custom(RewardModel):
     def __init__(self,
-                 pretrained: Optional[str] = None,
-                 config: Optional[GPT2Config] = None,
-                 checkpoint: bool = False,
-                 lora_rank: int = 0,
-                 lora_train_bias: str = 'none',
-                 tokenizer=None) -> None:
+                pretrained: str | None = None,
+                config: GPT2Config | None = None,
+                checkpoint: bool = False,
+                lora_rank: int = 0,
+                lora_train_bias: str = 'none',
+                tokenizer=None) -> None:
         if pretrained is not None:
             model = GPT2Model.from_pretrained(pretrained)
             model.resize_token_embeddings(len(tokenizer))
@@ -485,22 +487,13 @@ class GPTRM_custom(RewardModel):
 # Step 2 - (Reward Model, RM) 학습, 추론
 @print_func_name
 def run_reward_model(cfg, tokenizer):
+    clear_device_cache()
 
-    # 1. 환경 설정 및 모델 초기화
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif hasattr(torch, 'xpu') and torch.xpu.is_available():
-        torch.xpu.empty_cache()
-
-    # NaiveStrategy class
-    #   분산 학습이나 모델 초기화 방식을 정의하는 전략 클래스. 여기서는 모델 생성 컨텍스트를 제공합니다.
-    #   chatgpt/trainer/strategies/base 모듈의 Strategy를 상속
-    with NaiveStrategy().model_init_context():
+    with NaiveStrategy().model_init_context():  # 모델 생성 컨텍스트 제공한다? 
         model = GPTRM_custom(pretrained=cfg['model_name'],
                             lora_rank=0, tokenizer=tokenizer).to(cfg['device'])
 
     # 2. 데이터셋 구성 (Pairwise Ranking)
-    
     # kochatgpt_2_RM.jsonl - 각 프롬프트에 대한 응답 두 개(completion_0, completion_1), 선호도 순위(ranking)로 구성
     list_data_dict = load_jsonl(cfg['data_path_2_RM'])
 

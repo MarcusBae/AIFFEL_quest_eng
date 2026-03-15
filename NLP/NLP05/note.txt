@@ -15,7 +15,10 @@
         --model_args pretrained=models/output_1_SFT,tokenizer=skt/kogpt2-base-v2,dtype="float16" \
         --tasks kobest_copa,kobest_hellaswag,kobest_boolq \
 
-4. 각종 기법 적용
+4. 성능 지표 공부 
+     
+
+5. 각종 기법 적용
     1. SFT Param 변경
     2. RM Param 변경
     3. PPO Param 변경
