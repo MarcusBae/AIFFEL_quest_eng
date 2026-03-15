@@ -478,38 +478,104 @@ class GPTRM_custom(RewardModel):
 
 @print_func_name
 def run_reward_model(cfg, tokenizer):
-
-    # ----- 1. 모델 초기화 (생성 또는 로드) ------------------------------------------------------------ 
-    exists_model = os.path.exists(cfg['rm_saved_dir'])
-
-    with NaiveStrategy().model_init_context():
-        if not exists_model: 
-            model = GPTRM_custom(   
-                pretrained=cfg['model_name'],
-                lora_rank=0, 
-                tokenizer=tokenizer,
-            ).to(cfg['device'])
-        else: # 모델이 있으면 로드
-            model = GPTRM_custom.from_custom_pretrained(cfg['rm_saved_dir'], device=cfg['device'])
-
-    # ----- 2. 데이터셋 준비 - Pairwise Ranking ------------------------------------------------------------
-    list_data_dict_RM = load_jsonl(cfg['data_path_2_RM'])
-    total_pairs = prepare_pairwise_data(list_data_dict_RM) 
-
-    logging.info(f'total_pairs len: {len(total_pairs)}')    
+    clear_device_cache()
+    rm_model_path = os.path.join(cfg['rm_saved_dir'], 'reward_model.pt')
     
-    random.seed(cfg['rm_seed'])
-    random.shuffle(total_pairs)
+    # 모델 학습 여부에 따른 분기 처리
+    if not os.path.exists(rm_model_path):
+        with NaiveStrategy().model_init_context():
+            model = GPTRM_custom(pretrained=cfg['model_name'],
+                                lora_rank=0, tokenizer=tokenizer).to(cfg['device'])
 
-    train_data_RM = total_pairs[:cfg['rm_max_train_samples']]
-    eval_data_RM = total_pairs[cfg['rm_max_train_samples']:cfg['rm_max_train_samples'] + 200]
+        # 1. 데이터셋 구성 (Pairwise Ranking)
+        list_data_dict = load_jsonl(cfg['data_path_2_RM'])
+        total_data_ranking2chosen = prepare_pairwise_data(list_data_dict)
 
-    train_dataset = RewardDataset(train_data_RM, tokenizer, cfg['rm_max_len'])
-    eval_dataset = RewardDataset(eval_data_RM, tokenizer, cfg['rm_max_len'])
+        # print('------- 1. ---------------------------------------------')
+        # print(f'before data num: {len(list_data_dict)}')
+        # print(f'after  data num: {len(total_data_ranking2chosen)}')
+        # print(f'data example: {total_data_ranking2chosen[45]}')
 
-    # ----- 3. 학습 (모델이 없을 때만 실행) ------------------------------------------------------------
-    @print_func_name
+        # 2. 데이터 셔플링 및 분할
+        random.seed(230319)
+        random.shuffle(total_data_ranking2chosen)
+        print(total_data_ranking2chosen[45])
 
+        train_data = total_data_ranking2chosen[:1000]
+        eval_data = total_data_ranking2chosen[1000:1200]
+
+        print(len(train_data))
+        print(len(eval_data))
+
+        # 3. RewardDataset 생성
+        # * 입력 데이터 처리, 토큰화, 데이터셋 생성
+        train_dataset = RewardDataset(train_data, tokenizer, 512)
+        eval_dataset = RewardDataset(eval_data, tokenizer, 512)
+
+        # idx = 1
+        # print('#'*70)
+        # print('## prompt ##')
+        # print(train_data[idx]['prompt'])
+        # print('#'*70)
+        # print('## chosen ##')
+        # print(train_data[idx]['chosen'])
+        # print('#'*70)
+        # print('## rejected ##')
+        # print(train_data[idx]['rejected'])
+
+        # 4. Reward Model 학습
+        trainer = RewardModelTrainer(model=model,
+                                strategy=NaiveStrategy(),
+                                optim=torch.optim.Adam(model.parameters(), lr=5e-5),
+                                train_dataset=train_dataset,
+                                eval_dataset=eval_dataset,
+                                batch_size=cfg['rm_batch_size'],
+                                max_epochs=cfg['rm_max_epochs'])
+        trainer.fit(use_lora=0)
+        model.save_pretrained(cfg['rm_saved_dir'])
+    else:
+        # 5. 기존 모델 로드 (권장 방법 사용)
+        with NaiveStrategy().model_init_context():
+            model = GPTRM_custom.from_custom_pretrained(
+                cfg['rm_saved_dir'], 
+                device=cfg['device'], 
+                pretrained=cfg['model_name'], 
+                lora_rank=0, 
+                tokenizer=tokenizer
+            )
+
+    # 6. 추론 테스트
+    def inference_RM(input_text):
+        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(cfg['device'])
+        output = model(input_ids)
+        output_reward = output.cpu().detach().numpy()[0]
+
+        print(f'input: {input_text}')
+        print(f'reward score: {output_reward:.1f}')
+
+        return output_reward
+
+    test_texts = [
+        '인공지능은 똥멍청이 입니다',
+        '인공지능(AI)은 컴퓨터에서 음성 및 작성된 언어를 보고 이해하고 번역하고 데이터를 분석하고 추천하는 기능을 포함하여 다양한 고급 기능을 수행할 수 있는 일련의 기술입니다.',
+        "인공지능(AI)은 컴퓨터에서 음성 및 작성된 언어를 보고 이해하고 번역하고 데이터를 분석하고 추천하는 기능을 포함하여 다양한 고급 기능을 수행할 수 있는 일련의 기술입니다. AI는 현대적인 컴퓨팅 혁신에서 중추적인 역할을 하며 개인과 비즈니스의 가치를 창출합니다. 예를 들어 광학 문자 인식(OCR)은 AI를 사용해 이미지 및 문서에서 텍스트 및 데이터를 추출하고, 구조화되지 않은 콘텐츠를 비즈니스에 바로 사용할 수 있게 만들고, 유용한 정보를 창출합니다.",
+        "인공지능은 일반적으로 인간의 지능이 필요하거나 인간이 분석할 수 있는 것보다 규모가 큰 데이터를 포함하는 방식으로 추론, 학습 및 행동할 수 있는 컴퓨터 및 기계를 구축하는 것과 관련된 과학 분야입니다. AI는 컴퓨터 공학, 데이터 분석 및 통계, 하드웨어 및 소프트웨어 엔지니어링, 언어학, 신경 과학은 물론 철학과 심리학을 포함하여 여러 학문을 포괄하는 광범위한 분야입니다. 비즈니스의 운영 수준에서 AI는 주로 머신러닝과 딥 러닝을 기반으로 하는 기술 모음으로, 데이터 분석, 예상 및 예측, 객체 분류, 자연어 처리, 추천, 지능형 데이터 가져오기 등을 수행할 수 있습니다."
+    ]
+
+    for text in test_texts:
+        inference_RM(text)
+
+    # input text가 더 좋아질수록 reward score가 점진적으로 상승하나요?
+    # 각 reward score 값이 적절해 보이시나요?
+    # reward score가 음수가 된다는 건 어떤 의미일까요?
+    # 그 전에 reward score가 음수도 될 수 있도록 하려면 어떻게 해야 할까요?
+    # RM의 출력인 reward score가 scalar가 되도록 하는 게 왜 중요할까요?
+    # RLHF의 마지막 단계인 PPO 학습을 통해 살펴보도록 하겠습니다.
+    # 여기서도 메모리 관리를 위해 한 번더 캐시를 비우고 넘어가겠습니다.
+
+    clear_device_cache()
+
+@print_func_name
 def run_ppo(cfg, model, tokenizer):
     """
     Proximal Policy Optimization (PPO)를 이용해 텍스트 생성 모델을 강화학습(RL)으로 미세 조정하는 함수.
@@ -607,8 +673,8 @@ def run_ppo(cfg, model, tokenizer):
     list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in DEFAULT_TEST_PROMPTS]
 
     outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
-    for output in outputs:
-        print(output) 모델입니다. 프롬프트에 대해 답변을 생성합니다.
+    # for output in outputs:
+    #     print(output) 모델입니다. 프롬프트에 대해 답변을 생성합니다.
 #   Critic (가치 모델): 특정 상태의 가치($V$)를 예측하여 Actor의 업데이트를 돕습니다.
 #   Initial Model (참조 모델): 학습 중 Actor가 기존 언어 능력을 잃고 너무 이상하게 변하지 않도록(KL Divergence 제어) 기준점이 되어주는 모델입니다.
 #   Reward Model (보상 모델): 생성된 답변이 얼마나 좋은지 점수를 매기는 판사 역할을 합니다.
@@ -624,7 +690,7 @@ def run_ppo(cfg, model, tokenizer):
             print(f"\n>>> Loading pre-trained PPO model from {cfg['ppo_saved_dir']}")
             actor = GPTActor(pretrained=cfg['ppo_saved_dir'], lora_rank=0).to(device)
         else:
-            print(f">>> Loading SFT model for PPO training from {cfg['sft_saved_dir']")
+            print(f">>> Loading SFT model for PPO training from {cfg['sft_saved_dir']}")
             actor = GPTActor(pretrained=cfg['sft_saved_dir'], lora_rank=0).to(device)
 
         critic = GPTCritic(pretrained=cfg['rm_saved_dir'], lora_rank=0).to(device)
@@ -638,7 +704,6 @@ def run_ppo(cfg, model, tokenizer):
 
     (actor, actor_optim), (critic, critic_optim), reward_model, initial_model = NaiveStrategy().prepare(
                                 (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
-
 
     # PPO 학습에 쓸 데이터를 토크나이징
     list_data_dict = load_jsonl(cfg['data_path_3_PPO'])
@@ -809,3 +874,4 @@ def run_case1():
 if __name__ == "__main__":
     run_baseline()
     run_case1()
+
