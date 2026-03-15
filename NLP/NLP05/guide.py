@@ -55,7 +55,7 @@ from chatgpt.trainer import PPOTrainer
 # Global Constants & Configuration
 # -----------------------------------------------------------------------------
 
-PROMPT_TEMPLATE = "### Instruction(명령어):\n{prompt}\n\n### Response(응답):"
+PROMPT_TEMPLATE = ">>> Instruction:\n{prompt}\n>>> Response:"
 
 DEFAULT_TEST_PROMPTS = [
     '불고기용 고기 한우에요?',
@@ -81,10 +81,10 @@ def load_jsonl(path):
     with open(path, "r", encoding='utf-8-sig') as f:
         return json.load(f)
 
+
 def prepare_pairwise_data(list_data_dict):
     """
-    kochatgpt_2_RM.jsonl 데이터를 바탕으로 (prompt, chosen, rejected) 쌍을 생성합니다.
-    3개의 답변(completion_0, 1, 2) 중 ranking이 높은 쪽을 chosen으로, 낮은 쪽을 rejected로 설정합니다.
+    kochatgpt_2_RM.jsonl -> (prompt, chosen, rejected) 쌍 생성
     """
     total_pairs = []
     for item in list_data_dict:
@@ -165,14 +165,11 @@ def generate_pipeline(prompts, model_path, tokenizer):
 
 # Manual implementation - low level
 @print_func_name
-def generate_custom(prompts, model, tokenizer, device=None):
+def generate_custom(prompts, model, tokenizer, device='cpu'):
     """
     하나씩 루프를 돌며 생성, Top-P Sampling을 통해 매번 조금씩 다른 창의적인 답변을 생성
     model.generate를 직접 호출 (Sampling 중심)
     """
-    if device is None:
-        device = next(model.parameters()).device
-    
     model.to(device)
     results = []
     
@@ -197,7 +194,7 @@ def generate_custom(prompts, model, tokenizer, device=None):
     return results
 
 @print_func_name
-def step_02_show_info(cfg):
+def show_info(cfg):
     print(f"Torch version: {torch.__version__}") # Torch version:1.12.1
     print(f"transformers version: {transformers.__version__}") # transformers 4.28.0
     
@@ -392,7 +389,6 @@ class DataCollatorForSupervisedDataset(object):
 # SFT(Supervised Fine-Tuning) 수행 후 결과 확인
 @print_func_name
 def run_sft(cfg, model, tokenizer):
-    clear_device_cache()
 
     # 학습용 배치 Batch 생성기
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
@@ -426,28 +422,15 @@ def run_sft(cfg, model, tokenizer):
         trainer.train() # 학습 시작
         model.save_pretrained(cfg['sft_saved_dir'])
     else:
-        print(f"SFT model already exists: {cfg['sft_saved_dir']}")
-
-    # 문장 생성 능력 확인위한 pipleline generator 생성
-    # generator = transformers.pipeline(
-    #     'text-generation',
-    #     model=cfg['sft_saved_dir'],
-    #     tokenizer=tokenizer
-    # )
-
-    # list_prompt = [PROMPT_TEMPLATE.format_map({'prompt' : tmp}) for tmp in DEFAULT_TEST_PROMPTS]
-    # list_results = generate_pipeline(list_prompt, cfg['sft_saved_dir'], tokenizer)
-
-    # for prompt, result in zip(list_prompt, list_result):
-    #     print()
-    #     print(f"prompt: {prompt}")
-    #     print(f"result: {result}")
+        print(f">>> SFT model already exists: {cfg['sft_saved_dir']}")
 
 # -----------------------------------------------------------------------------
 # 4. Reward Model
 # -----------------------------------------------------------------------------
 
-# GPTRM_custom: GPT 모델 뒤에 Reward를 출력하기 위한 Scalar Head(Linear layer)가 붙은 커스텀 모델입니다.
+# GPTRM_custom: GPT 모델 뒤에 Reward를 출력하기 위한 Scalar Head(Linear layer)가 붙은 커스텀 모델.
+# 사전 학습된 GPT-2 모델 + Scalar Head(Linear layer) 생성
+# GPT-2는 다음 단어를 예측하는 모델이지만, 여기서는 마지막에 1개의 숫자(스칼라)만 출력하도록 개조되어 "이 문장의 점수는 몇 점이다를 출력
 class GPTRM_custom(RewardModel):
     def __init__(self,
                 pretrained: str | None = None,
@@ -456,8 +439,9 @@ class GPTRM_custom(RewardModel):
                 lora_rank: int = 0,
                 lora_train_bias: str = 'none',
                 tokenizer=None) -> None:
+
         if pretrained is not None:
-            model = GPT2Model.from_pretrained(pretrained)
+            model = GPT2Model.from_pretrained(pretrained) # Class-Data, Architecture-Weights
             model.resize_token_embeddings(len(tokenizer))
         elif config is not None:
             model = GPT2Model(config)
@@ -483,198 +467,164 @@ class GPTRM_custom(RewardModel):
         torch.save(self.state_dict(), os.path.join(dir, 'reward_model.pt'))
         if self.pretrained is not None:
             self.model.save_pretrained(dir)
+    
+    # 로딩 메서드 추가
+    @classmethod
+    def from_custom_pretrained(cls, save_directory, device='cpu', **kwargs):
+        model = cls(**kwargs)
+        state_dict = torch.load(os.path.join(save_directory, 'reward_model.pt'), map_location=device)
+        model.load_state_dict(state_dict)
+        return model.to(device)
 
-# Step 2 - (Reward Model, RM) 학습, 추론
 @print_func_name
 def run_reward_model(cfg, tokenizer):
-    clear_device_cache()
 
-    with NaiveStrategy().model_init_context():  # 모델 생성 컨텍스트 제공한다? 
-        model = GPTRM_custom(pretrained=cfg['model_name'],
-                            lora_rank=0, tokenizer=tokenizer).to(cfg['device'])
+    # ----- 1. 모델 초기화 (생성 또는 로드) ------------------------------------------------------------ 
+    exists_model = os.path.exists(cfg['rm_saved_dir'])
 
-    # 2. 데이터셋 구성 (Pairwise Ranking)
-    # kochatgpt_2_RM.jsonl - 각 프롬프트에 대한 응답 두 개(completion_0, completion_1), 선호도 순위(ranking)로 구성
-    list_data_dict = load_jsonl(cfg['data_path_2_RM'])
+    with NaiveStrategy().model_init_context():
+        if not exists_model: 
+            model = GPTRM_custom(   
+                pretrained=cfg['model_name'],
+                lora_rank=0, 
+                tokenizer=tokenizer,
+            ).to(cfg['device'])
+        else: # 모델이 있으면 로드
+            model = GPTRM_custom.from_custom_pretrained(cfg['rm_saved_dir'], device=cfg['device'])
 
-    # 3. 조합 생성: 2개의 답변에서 나올 수 있는 모든 쌍(Pair)
-    total_data_ranking2chosen = prepare_pairwise_data(list_data_dict)
+    # ----- 2. 데이터셋 준비 - Pairwise Ranking ------------------------------------------------------------
+    list_data_dict_RM = load_jsonl(cfg['data_path_2_RM'])
+    total_pairs = prepare_pairwise_data(list_data_dict_RM) 
 
-    print('------- 1. ---------------------------------------------')
-    print(f'before data num: {len(list_data_dict)}')
-    print(f'after  data num: {len(total_data_ranking2chosen)}')
-    print(f'data example: {total_data_ranking2chosen[45]}')
-
-    """
-    # kochatgpt_2_RM.jsonl
-    #   chatGPT, davinch, ada 세개의 모델에 같은 prompt를 주고 얻은 답변을
-    #   순서대로 good, bad, worst로 간주
-    #   순서를 뒤섞어 completion_0, completion_1, completion_2 세 키에 할당하여 만든 데이터셋
+    logging.info(f'total_pairs len: {len(total_pairs)}')    
     
-    #   이러면 chosen과 resjected에 각각
-    #   completion_0, completion_1, completion_2 세개 답변이 가능한 모든 조합으로 들어가게 되어
-    #       chosen에 worst 답변이 들어가고
-    #       rejected에 good답변이 들어간 데이터도 생성됨. 
+    random.seed(cfg['rm_seed'])
+    random.shuffle(total_pairs)
 
-    # 위와 같이 ranking dataset을 만들면 RM의 loss는 어떻게 계산이 되는 걸까요?
-    # RM의 loss function은 pairwiseloss라는 이름으로 설계되어 있습니다.
-    # 아래 pairwiseloss 코드를 첨부했습니다.
-    # 원본 코드는 chatgpt/models 폴더의 loss.py 를 확인해보세요.
+    train_data_RM = total_pairs[:cfg['rm_max_train_samples']]
+    eval_data_RM = total_pairs[cfg['rm_max_train_samples']:cfg['rm_max_train_samples'] + 200]
 
-    # Q. 위 코드블럭에서 probs = torch.sigmoid(chosen_reward - reject_reward) 코드를 찾아보세요.
-    #   chosen_reward - reject_reward 식은 어떤 연산을 의미하나요? loss = -log_probs.mean() 코드는 무엇을 최대화하는 연산으로 해석할 수 있을까요?
-    # A. `chosen_reward` - reject_reward는 선택된(chosen) 보상과 거부된(reject) 보상 간의 차이를 계산하는 연산입니다.
-    # 이 차이가 클수록 선택된 샘플이 거부된 샘플보다 높은 보상을 받았다는 것을 의미하죠.
-    # 여기서 `torch.sigmoid(chosen_reward - reject_reward)`를 적용하면, 두 보상의 차이를 확률 값(0과 1 사이)으로 변환하게 됩니다.
-    # 이 확률 값은 선택된 샘플이 거부된 샘플보다 더 좋은 결과를 낼 확률로 해석할 수 있습니다.
-    # `loss = -log_probs.mean()` 코드는 선택된 샘플이 거부된 샘플보다 더 좋은 결과를 내는 log 확률을 최대화하는 방향으로 작동합니다.
-    # class PairWiseLoss(nn.Module):
-    #     def forward(self, chosen_reward: torch.Tensor, reject_reward: torch.Tensor) -> torch.Tensor:
-    #         probs = torch.sigmoid(chosen_reward - reject_reward)
-    #         log_probs = torch.log(probs)
-    #         loss = -log_probs.mean()
-    #         return loss
+    train_dataset = RewardDataset(train_data_RM, tokenizer, cfg['rm_max_len'])
+    eval_dataset = RewardDataset(eval_data_RM, tokenizer, cfg['rm_max_len'])
 
-    # total_data_ranking2chosen = []
+    # ----- 3. 학습 (모델이 없을 때만 실행) ------------------------------------------------------------
+    @print_func_name
 
-    # for tmp in list_data_dict:
-    #      prompt = tmp['prompt']
-    #      ranking = tmp['ranking']
-
-    #      for index in range(1, len(ranking)):
-    #          n = ranking[0]
-    #          m = ranking[index]
-    #          data = {
-    #              'prompt': prompt,
-    #              'chosen': tmp['completion_{}'.format(n)],
-    #              'rejected': tmp['completion_{}'.format(m)]
-    #          }
-
-    #          total_data_ranking2chosen.append(data)
-    # Q. 위 코드대로 ranking dataset 함수를 수정하게 되면 ranking data가 어떻게 만들어지게 되나요? 둘의 차이를 비교하고 어떤 데이터셋을 사용하는게 더 적절한지 이야기해봅시다.
-    # A. 힌트
-    # 힌트
-    # **기존 코드** (단순 ranking2chosen)
-    # ranking의 첫 번째 후보(최고 순위)를 항상 chosen으로 사용하고, 나머지 후보들을 rejected로 하는 방식입니다.
-    # - 예를 들어, ranking이 [A, B, C]라면 (A가 최고라고 가정)
-    #    - (prompt, chosen=A, rejected=B)
-    #    - (prompt, chosen=A, rejected=C)
-    # 즉, 각 프롬프트당 2개의 pair가 생성됩니다.
-
-    # **비교 코드** (전체 쌍 생성):
-    # 후보들 간의 모든 쌍을 비교하여, 각 pair마다 어느 쪽이 더 좋은지 ranking 값을 비교합니다.
-    # - ranking이 [A, B, C]라면
-    #    - (prompt, chosen=A, rejected=B)
-    #    - (prompt, chosen=A, rejected=C)
-    #    - (prompt, chosen=B, rejected=C)
-    # 즉, 각 프롬프트당 3개의 pair가 생성됩니다.
-
-    # 만약 데이터의 ranking이 신뢰할 수 있고, 후보들 간의 미세한 차이를 모델이 잘 반영해야 한다면, 전체 쌍 생성 방식이 더 풍부한 학습 신호를 제공할 수 있습니다.
-    # 반면에, 노이즈나 불확실성이 큰 데이터라면, 단순히 최고 후보와의 비교만 사용하는 것이 더 안정적일 수 있습니다
+def run_ppo(cfg, model, tokenizer):
+    """
+    Proximal Policy Optimization (PPO)를 이용해 텍스트 생성 모델을 강화학습(RL)으로 미세 조정하는 함수.
+    이 함수는 SFT(Supervised Fine-Tuning)된 모델과 RM(Reward Model)을 불러와, 
+    RM의 보상을 최대화하도록 언어 모델을 훈련시킵니다.
     """
 
-    # ranking dataset을 shuffle한 후 train set를 생성
-    # 빠르게 돌려보기 위해 전체 데이터중 일부만 학습
-    random.seed(230319)
-    random.shuffle(total_data_ranking2chosen)
-    print(total_data_ranking2chosen[45])
+    device = cfg['device']
 
-    train_data = total_data_ranking2chosen[:1000]
-    eval_data = total_data_ranking2chosen[1000:1200]
+    # 1. 4개 모델 준비 
+    with NaiveStrategy().model_init_context():
+        # Policy Network(Actor): 현재 학습 대상. 프롬프트가 주어지면 응답을 생성합니다.
+        # 이미 PPO 학습된 모델이 있다면 재사용하고, 없다면 SFT 모델을 불러옵니다.
+        if os.path.exists(cfg['ppo_saved_dir']):
+            print(f"\n>>> Loading pre-trained PPO model from {cfg['ppo_saved_dir']}")
+            actor = GPTActor(pretrained=cfg['ppo_saved_dir'], lora_rank=0).to(device)
+        else:
+            print(f">>> Loading SFT model for PPO training from {cfg['sft_saved_dir']}")
+            actor = GPTActor(pretrained=cfg['sft_saved_dir'], lora_rank=0).to(device)
 
-    print(len(train_data))
-    print(len(eval_data))
+        # Value Network(Critic): 입력된 상태(텍스트 시퀀스)의 가치(Value)를 예측합니다.
+        # Actor가 더 나은 방향으로 업데이트되도록 Baseline을 제공하여 분산을 줄이는 역할을 합니다.
+        critic = GPTCritic(pretrained=cfg['rm_saved_dir'], lora_rank=0).to(device)
 
-    # RewardDataset
-    # * 입력 데이터 처리
-    #       각 데이터 항목은 prompt, chosen, rejected 등의 키를 가지며,
-    #       이 클래스는 해당 텍스트들을 받아서 모델 학습에 적합한 형식으로 변환합니다.
-    # * 토큰화(tokenization)
-    #       토큰 ID로 변환, 최대 길이, 패딩(padding) 적용
-    # * 데이터셋 생성
-    #       전처리된 데이터를 PyTorch의 Dataset 형식(예: torch.utils.data.Dataset)으로 생성
-    train_dataset = RewardDataset(train_data, tokenizer, 512)
-    eval_dataset = RewardDataset(eval_data, tokenizer, 512)
+        # Reference Model(Initial Model): 학습 과정에서 Actor 모델이 원래 가진 언어 구사 능력을 잃거나 
+        # 너무 "Reward Hacking(점수만 높게 받기 위해 문맥에 맞지 않는 말도 안되는 텍스트 생성)" 하는 것을 방지하기 위해 
+        # KL-Divergence 페널티를 계산할 때 기준이 되는 모델입니다. SFT 모델(초기 Actor)을 복사해 사용하며 파라미터 업데이트는 되지 않습니다.
+        initial_model = deepcopy(actor)
+        
+        # Reward Model (보상 모델): 응답의 최종 점수를 매기는 판사 역할을 합니다 (Critic과 가중치 공유/복사)
+        reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
 
-    idx = 1
-    print('#'*70)
-    print('## prompt ##')
-    print(train_data[idx]['prompt'])
-    print('#'*70)
-    print('## chosen ##')
-    print(train_data[idx]['chosen'])
-    print('#'*70)
-    print('## rejected ##')
-    print(train_data[idx]['rejected'])
+    # Actor와 Critic은 각각 Optimizer를 가집니다 (PPO 정책 학습용)
+    actor_optim = torch.optim.Adam(actor.parameters(), lr=5e-6)
+    critic_optim = torch.optim.Adam(critic.parameters(), lr=5e-6)
 
-    # Reward Model 학습
-    if not os.path.exists(os.path.join(cfg['rm_saved_dir'], 'reward_model.pt')):
-        trainer = RewardModelTrainer(model=model,
-                                strategy=NaiveStrategy(),
-                                optim=torch.optim.Adam(model.parameters(), lr=5e-5),
-                                train_dataset=train_dataset,
-                                eval_dataset=eval_dataset,
-                                batch_size=cfg['rm_batch_size'],
-                                max_epochs=cfg['rm_max_epochs'])
-        trainer.fit(use_lora=0)
-        model.save_pretrained(cfg['rm_saved_dir'])
+    (actor, actor_optim), (critic, critic_optim), reward_model, initial_model = NaiveStrategy().prepare(
+                                (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
+
+
+    # 2. PPO 학습에 쓸 데이터셋(프롬프트만 있는 데이터) 로드 및 토크나이징 함수 정의
+    list_data_dict = load_jsonl(cfg['data_path_3_PPO'])
+    list_prompt = [tmp['prompt'] for tmp in list_data_dict]
+
+    def tokenize_fn(texts):
+        # 입력 텍스트(프롬프트)를 배 단위로 처리할 때 사이즈를 맞추기 위해 Padding 및 Truncation
+        batch = tokenizer(texts, return_tensors='pt', max_length=96, padding=True, truncation=True)
+
+        if str(device) == 'cuda' or str(device) == 'xpu':
+            return {k: v.to(device) for k, v in batch.items()}
+
+        return {k: v for k, v in batch.items()}
+
+    # 3. PPO 학습 진행
+    # 원본 : chatgpt/trainer/ppo.py 구조 활용
+    # PPO의 loss function : policy loss와 value loss로 나뉩니다 (chatgpt/models/loss.py)
+
+    if not os.path.exists(os.path.join(cfg['ppo_saved_dir'], 'config.json')):
+        if not os.path.exists(cfg['ppo_saved_dir']):
+            os.makedirs(cfg['ppo_saved_dir'])
+
+        print(">>> Starting PPO training...")
+        # PPOTrainer 초기화 및 하이퍼파라미터 설정
+        trainer = PPOTrainer(NaiveStrategy(),
+                     actor,
+                     critic,
+                     reward_model,
+                     initial_model,
+                     actor_optim,
+                     critic_optim,
+                     max_epochs=1,
+                     train_batch_size=8,
+                     tokenizer=tokenize_fn,
+                     max_length=128,          # 생성될 전체 시퀀스(프롬프트+답변) 최대 길이
+                     do_sample=True,          # 생성 다양성을 위해 샘플링 적용
+                     temperature=1.0,         # Softmax 온도 계수
+                     top_k=50,                # 샘플링 가능한 후보 단어 수 제한
+                     pad_token_id=tokenizer.pad_token_id,
+                     eos_token_id=tokenizer.eos_token_id
+        )
+
+        # num_episodes: 전체 데이터(프롬프트 집합)를 몇 번 돌지 지정
+        trainer.fit(list_prompt,
+                num_episodes=10,
+                max_timesteps=3,              # 각 프롬프트에 대해 텍스트를 생성하여 환경과 상호작용하는 스텝 수
+                update_timesteps=3)           # 쌓인 경험(Experience)을 바탕으로 네트워크를 업데이트하는 주기
+    
+        # 학습된 최종 Policy Network 저장
+        actor.model.save_pretrained(cfg['ppo_saved_dir'])
+        print(">>> PPO training completed and model saved.")
     else:
-        # 권장 방법: 커스텀 클래스로 로드하고 state_dict 적용
-        with NaiveStrategy().model_init_context():
-            model = GPTRM_custom(pretrained=cfg['model_name'], lora_rank=0, tokenizer=tokenizer)
-            state_dict = torch.load(os.path.join(cfg['rm_saved_dir'], 'reward_model.pt'), map_location=cfg['device'])
-            model.load_state_dict(state_dict)
-            model = model.to(cfg['device'])
+        print(">>> PPO training skipped as pre-trained model was loaded.")
 
-    def inference_RM(input_text):
-        input_ids = tokenizer.encode(input_text, return_tensors='pt').to(cfg['device'])
-        output = model(input_ids)
-        output_reward = output.cpu().detach().numpy()[0]
+    # 4. PPO 모델 추론(Inference) 단계: 기본 테스트 프롬프트들에 대해 답변을 잘 생성하는지 실험
+    list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in DEFAULT_TEST_PROMPTS]
 
-        # print('input: %s\nreward score: %.1f'%(input_text, output_reward))
-        print(f'input: {input_text}')
-        print(f'reward score: {output_reward:.1f}')
-
-        return output_reward
-
-    input_text = '인공지능은 똥멍청이 입니다'
-    output_reward = inference_RM(input_text=input_text)
-
-    input_text = '인공지능(AI)은 컴퓨터에서 음성 및 작성된 언어를 보고 이해하고 번역하고 데이터를 분석하고 추천하는 기능을 포함하여 다양한 고급 기능을 수행할 수 있는 일련의 기술입니다.'
-    output_reward = inference_RM(input_text=input_text)
-
-    input_text = "인공지능(AI)은 컴퓨터에서 음성 및 작성된 언어를 보고 이해하고 번역하고 데이터를 분석하고 추천하는 기능을 포함하여 다양한 고급 기능을 수행할 수 있는 일련의 기술입니다. AI는 현대적인 컴퓨팅 혁신에서 중추적인 역할을 하며 개인과 비즈니스의 가치를 창출합니다. 예를 들어 광학 문자 인식(OCR)은 AI를 사용해 이미지 및 문서에서 텍스트 및 데이터를 추출하고, 구조화되지 않은 콘텐츠를 비즈니스에 바로 사용할 수 있게 만들고, 유용한 정보를 창출합니다."
-    output_reward = inference_RM(input_text=input_text)
-
-    input_text = "인공지능은 일반적으로 인간의 지능이 필요하거나 인간이 분석할 수 있는 것보다 규모가 큰 데이터를 포함하는 방식으로 추론, 학습 및 행동할 수 있는 컴퓨터 및 기계를 구축하는 것과 관련된 과학 분야입니다. AI는 컴퓨터 공학, 데이터 분석 및 통계, 하드웨어 및 소프트웨어 엔지니어링, 언어학, 신경 과학은 물론 철학과 심리학을 포함하여 여러 학문을 포괄하는 광범위한 분야입니다. 비즈니스의 운영 수준에서 AI는 주로 머신러닝과 딥 러닝을 기반으로 하는 기술 모음으로, 데이터 분석, 예상 및 예측, 객체 분류, 자연어 처리, 추천, 지능형 데이터 가져오기 등을 수행할 수 있습니다."
-    output_reward = inference_RM(input_text=input_text)
-
-
-    # input text가 더 좋아질수록 reward score가 점진적으로 상승하나요?
-    # 각 reward score 값이 적절해 보이시나요?
-    # reward score가 음수가 된다는 건 어떤 의미일까요?
-    # 그 전에 reward score가 음수도 될 수 있도록 하려면 어떻게 해야 할까요?
-    # RM의 출력인 reward score가 scalar가 되도록 하는 게 왜 중요할까요?
-    # RLHF의 마지막 단계인 PPO 학습을 통해 살펴보도록 하겠습니다.
-    # 여기서도 메모리 관리를 위해 한 번더 캐시를 비우고 넘어가겠습니다.
-
-    clear_device_cache()
-
-
-# -----------------------------------------------------------------------------
-# 5. Proximal Policy Optimization (PPO)
+    outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
+    for output in outputs:
+        print(output) 모델입니다. 프롬프트에 대해 답변을 생성합니다.
+#   Critic (가치 모델): 특정 상태의 가치($V$)를 예측하여 Actor의 업데이트를 돕습니다.
+#   Initial Model (참조 모델): 학습 중 Actor가 기존 언어 능력을 잃고 너무 이상하게 변하지 않도록(KL Divergence 제어) 기준점이 되어주는 모델입니다.
+#   Reward Model (보상 모델): 생성된 답변이 얼마나 좋은지 점수를 매기는 판사 역할을 합니다.
 # -----------------------------------------------------------------------------
 @print_func_name
 def run_ppo(cfg, model, tokenizer):
 
     device = cfg['device']
 
+    # 1. 4개 모델 준비 
     with NaiveStrategy().model_init_context():
         if os.path.exists(cfg['ppo_saved_dir']):
-            #print(f"✅ Loading pre-trained PPO model from {ppo_model_path}")
+            print(f"\n>>> Loading pre-trained PPO model from {cfg['ppo_saved_dir']}")
             actor = GPTActor(pretrained=cfg['ppo_saved_dir'], lora_rank=0).to(device)
         else:
-            #print(f"🚀 Loading SFT model for PPO training from {cfg["root_path"]}/models/output_1_SFT")
+            print(f">>> Loading SFT model for PPO training from {cfg['sft_saved_dir']")
             actor = GPTActor(pretrained=cfg['sft_saved_dir'], lora_rank=0).to(device)
 
         critic = GPTCritic(pretrained=cfg['rm_saved_dir'], lora_rank=0).to(device)
@@ -682,11 +632,13 @@ def run_ppo(cfg, model, tokenizer):
         initial_model = deepcopy(actor)
         reward_model = RewardModel(deepcopy(critic.model), deepcopy(critic.value_head)).to(device)
 
+
     actor_optim = torch.optim.Adam(actor.parameters(), lr=5e-6)
     critic_optim = torch.optim.Adam(critic.parameters(), lr=5e-6)
 
     (actor, actor_optim), (critic, critic_optim), reward_model, initial_model = NaiveStrategy().prepare(
                                 (actor, actor_optim), (critic, critic_optim), reward_model, initial_model)
+
 
     # PPO 학습에 쓸 데이터를 토크나이징
     list_data_dict = load_jsonl(cfg['data_path_3_PPO'])
@@ -700,11 +652,13 @@ def run_ppo(cfg, model, tokenizer):
 
         return {k: v for k, v in batch.items()}
 
-    # print(tokenize_fn('It takes something more than intelligence to act intelligently.'))
-    # len(list_prompt)
+    # PPO 학습
+    if not os.path.exists(os.path.join(cfg['ppo_saved_dir'], 'config.json')):
+        if not os.path.exists(cfg['ppo_saved_dir']):
+            os.makedirs(cfg['ppo_saved_dir'])
 
-    # PPO는 별도의 PPOTrainer를 설계하여 학습한다. 
-    trainer = PPOTrainer(NaiveStrategy(),
+        print(">>> Starting PPO training...")
+        trainer = PPOTrainer(NaiveStrategy(),
                      actor,
                      critic,
                      reward_model,
@@ -720,34 +674,23 @@ def run_ppo(cfg, model, tokenizer):
                      top_k=50,
                      pad_token_id=tokenizer.pad_token_id,
                      eos_token_id=tokenizer.eos_token_id
-    )
+        )
 
-    # 원본 : chatgpt/trainer/ppo.py
-    # 복잡도 : PPO > SFT, RM
-    # PPO의 loss function : chatgpt/models/loss.py PolicyLoss, ValueLoss class 에서 정의
-
-    # PPO 학습
-    if not os.path.exists(os.path.join(cfg['ppo_saved_dir'], 'config.json')):
-        if not os.path.exists(cfg['ppo_saved_dir']):
-            os.makedirs(cfg['ppo_saved_dir'])
-
-        print("⏳ Starting PPO training...")
         trainer.fit(list_prompt,
                 num_episodes=10,
                 max_timesteps=3,
                 update_timesteps=3)
     
         actor.model.save_pretrained(cfg['ppo_saved_dir'])
-        print("✅ PPO training completed and model saved.")
+        print(">>> PPO training completed and model saved.")
     else:
-        print("⏩ PPO training skipped as pre-trained model was loaded.")
+        print(">>> PPO training skipped as pre-trained model was loaded.")
 
     list_prompt = [PROMPT_TEMPLATE.format_map({'prompt': tmp}) for tmp in DEFAULT_TEST_PROMPTS]
 
     outputs = generate_custom(list_prompt, actor, tokenizer, cfg['device'])
     for output in outputs:
         print(output)
-        print("\n")
 
 def run_baseline():
     """ NODE baseline: 그냥 찍는 수준 """
@@ -784,6 +727,11 @@ def run_baseline():
 
         "rm_batch_size": 4,                     # V
         "rm_max_epochs": 1,                     # V
+
+         "rm_seed": 230319, 
+         "rm_max_train_samples": 1000, 
+         "rm_max_len": 512, 
+         "rm_lr": 5e-5 
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -794,9 +742,7 @@ def run_baseline():
         model_max_length=512,
     )
 
-    step_02_show_info(cfg)
-    # show_base_model_and_dataset(cfg, model, tokenizer)
-    # show_sft_and_rm_dataset(cfg)
+    show_info(cfg)
     run_sft(cfg, model, tokenizer)
     run_reward_model(cfg, tokenizer)
     run_ppo(cfg, model, tokenizer)
@@ -807,7 +753,7 @@ def run_case1():
     """ SFT 관련 param 조정 """
 
     model_name = "skt/kogpt2-base-v2"
-    tcname = model_name.replace("/", "-") + "_try1"
+    tcname = model_name.replace("/", "-") + "_case1"
 
     try:
         root_path = os.path.dirname(os.path.abspath(__file__))
@@ -838,6 +784,11 @@ def run_case1():
 
         "rm_batch_size": 4,
         "rm_max_epochs": 1,
+
+        "rm_seed": 230319, 
+        "rm_max_train_samples": 1000, 
+        "rm_max_len": 512, 
+        "rm_lr": 5e-5 
     }
 
     model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(cfg["device"])
@@ -848,10 +799,7 @@ def run_case1():
         model_max_length=512,
     )
 
-    step_02_show_info(cfg)
-    # show_base_model_and_dataset(cfg, model
-    # , tokenizer)
-    # show_sft_and_rm_dataset(cfg)
+    show_info(cfg)
     run_sft(cfg, model, tokenizer)
     run_reward_model(cfg, tokenizer)
     run_ppo(cfg, model, tokenizer)
@@ -861,4 +809,3 @@ def run_case1():
 if __name__ == "__main__":
     run_baseline()
     run_case1()
-
