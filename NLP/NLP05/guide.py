@@ -534,7 +534,7 @@ def run_reward_model(cfg, tokenizer):
         trainer.fit(use_lora=0)
         model.save_pretrained(cfg['rm_saved_dir'])
     else:
-        # 5. 기존 모델 로드 (권장 방법 사용)
+        # 5. 기존 모델 로드 
         with NaiveStrategy().model_init_context():
             model = GPTRM_custom.from_custom_pretrained(
                 cfg['rm_saved_dir'], 
