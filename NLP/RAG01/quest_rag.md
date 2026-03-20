@@ -1,18 +1,22 @@
+### 기존 프로젝트 (Naive RAG) 개선 과제
+
 - 가이드 
 
-    - 기존 프로젝트 (Naive RAG) vs 개선 프로젝트 비교
+    - 기존 프로젝트 (Naive RAG) vs 개선 적용
         - Parameter
         - new module
         - new pattern
         - 위 선택지에서 자유롭게 설정
 
-    - 정량평가와 정성평가 적용
+    - 정량평가와 정성평가 적용 하기.
 
 - 순서 
-    - 기존 프로젝트 리팩토링
+    - 기존 프로젝트 리팩토링 - 완료 
         - RetrievalQA 구조 -> LCEL 구조
 
     - 정량 평가 방법, 정성 평가 방법 적용
+        - 정량 평가 - 
+
 
     - 이거 저거 적용
         * 성능 개선: Multi-Query Retriever를 적용한 결과, Context Recall 값이 **0.33에서 1.00으로 비약적으로 향상(200% 개선)
@@ -75,3 +79,49 @@
 11. Selft ???
 
 12. 
+
+## 클래스 다이어그램
+
+```mermaid
+classDiagram
+    class RAGProcessor {
+        +tokenizer
+        +model_name: str
+        +embedding_model_name: str
+        +chunk_size: int
+        +chunk_overlap: int
+        +llm: ChatOpenAI
+        +embedding_model: OpenAIEmbeddings
+        +texts: List[Document]
+        +db: Chroma
+        +prompt: ChatPromptTemplate
+        +__init__(file_path: str, cfg: dict)
+        +tiktoken_len(text: str) int
+        +get_rag_chain(cfg: dict) tuple
+    }
+
+    class RAGEvaluator {
+        +llm: ChatOpenAI
+        +embeddings: OpenAIEmbeddings
+        +__init__(llm, embeddings, embedding_model_name)
+        +run_eval(data_list: list) dict
+    }
+
+    class main {
+        <<Function>>
+    }
+
+    class run_rag_pipeline {
+        <<Function>>
+    }
+
+    class print_cfg {
+        <<Function>>
+    }
+
+    main ..> RAGProcessor : 생성
+    main ..> RAGEvaluator : 생성
+    main ..> run_rag_pipeline : 호출
+    run_rag_pipeline ..> RAGEvaluator : 사용
+    run_rag_pipeline ..> RAGProcessor : 사용 (chain/retriever)
+```
