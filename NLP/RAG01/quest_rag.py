@@ -21,8 +21,10 @@ from langchain_classic.retrievers.multi_query import MultiQueryRetriever
 from ragas import evaluate
 # from ragas.metrics.collections import (
 from ragas.metrics import (
-    faithfulness, answer_relevancy, context_recall, context_precision,
+    faithfulness, answer_relevancy, context_recall, context_precision, answer_similarity
 )
+from langchain_core.messages import HumanMessage, SystemMessage
+import numpy as np
 
 import pandas as pd
 
@@ -57,21 +59,30 @@ class RAGProcessor:
         self.db = Chroma.from_documents(self.texts, self.embedding_model)
         
         # 프롬프트 템플릿
-        template = """Answer the question based only on the following context:
+        template = """다음의 컨텍스트(Context)만을 바탕으로 질문(Question)에 답하세요:
 {context}
 
-Question: {question}
+질문: {question}
 
-Answer:"""
+답변:"""
         self.prompt = ChatPromptTemplate.from_template(template)
 
     def tiktoken_len(self, text):
         return len(self.tokenizer.encode(text))
 
     def get_rag_chain(self, cfg):
+        # 기본 k값 설정 (우선순위: cfg['k'] > cfg['search_kwargs']['k'] > 기본값 3)
         k = cfg.get("k", 3)
         search_type = cfg.get("search_type", "similarity")
-        search_kwargs = cfg.get("search_kwargs", {"k": k})
+        
+        # search_kwargs 가져오기 및 k값 동기화
+        search_kwargs = cfg.get("search_kwargs", {}).copy()
+        if "k" not in search_kwargs:
+            search_kwargs["k"] = k
+        else:
+            # cfg['k']가 명시적으로 있으면 search_kwargs['k']를 덮어씌움 (직관성 유도)
+            if "k" in cfg:
+                search_kwargs["k"] = cfg["k"]
         
         base_retriever = self.db.as_retriever(
             search_type=search_type,
@@ -99,6 +110,85 @@ class RAGEvaluator:
         self.llm = llm or ChatOpenAI(model="gpt-4o", temperature=0)
         self.embeddings = embeddings or OpenAIEmbeddings(model=embedding_model_name)
 
+    def calculate_retrieval_metrics(self, data_list):
+        """
+        Calculate Hit Rate and MRR for the retrieved contexts.
+        Uses a helper LLM to judge relevance of each context.
+        """
+        hits = []
+        reciprocal_ranks = []
+        
+        for item in data_list:
+            question = item["question"]
+            contexts = item["contexts"]
+            ground_truth = item["ground_truth"]
+            
+            # Judge each context for relevance
+            relevance_scores = []
+            for context in contexts:
+                prompt = f"""질문: {question}
+정답(Ground Truth): {ground_truth}
+컨텍스트: {context}
+
+위 컨텍스트가 정답을 참고하여 질문에 정확하게 답변하는 데 관련이 있고 도움이 되나요?
+'예' 또는 '아니오'로만 답하세요."""
+                response = self.llm.invoke([HumanMessage(content=prompt)]).content.strip().lower()
+                relevance_scores.append(1 if "예" in response or "yes" in response else 0)
+            
+            # Hit Rate: Was at least one context relevant?
+            hits.append(1 if sum(relevance_scores) > 0 else 0)
+            
+            # MRR: 1 / rank of first relevant context
+            try:
+                first_hit_index = relevance_scores.index(1)
+                reciprocal_ranks.append(1 / (first_hit_index + 1))
+            except ValueError:
+                reciprocal_ranks.append(0)
+                
+        return {
+            "hit_rate": np.mean(hits),
+            "mrr": np.mean(reciprocal_ranks)
+        }
+
+    def run_qualitative_eval(self, data_list):
+        """
+        Generate a qualitative score (1-5) and feedback for each answer.
+        """
+        scores = []
+        feedbacks = []
+        
+        for item in data_list:
+            prompt = f"""질문: {item['question']}
+생성된 답변: {item['answer']}
+정답(Ground Truth): {item['ground_truth']}
+
+생성된 답변을 정답과 비교하여 다음을 제공하세요:
+1. 품질 점수 (1~5점, 5점이 만점).
+2. 점수에 대한 짧은 피드백 (1~2문장).
+
+형식:
+Score: [점수]
+Feedback: [피드백]"""
+            response = self.llm.invoke([HumanMessage(content=prompt)]).content.strip()
+            
+            # Simple parsing
+            try:
+                score_line = [l for l in response.split('\n') if 'Score:' in l][0]
+                feedback_line = [l for l in response.split('\n') if 'Feedback:' in l][0]
+                score = float(score_line.split(':')[1].strip())
+                feedback = feedback_line.split(':')[1].strip()
+            except:
+                score = 3.0
+                feedback = "Unable to parse feedback."
+            
+            scores.append(score)
+            feedbacks.append(feedback)
+            
+        return {
+            "qualitative_score": np.mean(scores),
+            "feedbacks": feedbacks
+        }
+
     def run_eval(self, data_list):
         """
         data_list: list of dicts with keys ['question', 'answer', 'contexts', 'ground_truth']
@@ -109,12 +199,28 @@ class RAGEvaluator:
             "retrieved_contexts": [x["contexts"] for x in data_list],
             "reference": [x["ground_truth"] for x in data_list]
         })
-        return evaluate(
+        
+        # 1. Ragas Model-based Evaluation
+        ragas_res = evaluate(
             ds, 
-            metrics=[faithfulness, answer_relevancy, context_recall, context_precision],
+            metrics=[faithfulness, answer_relevancy, context_recall, context_precision, answer_similarity],
             llm=self.llm,
             embeddings=self.embeddings
         )
+        ragas_dict = ragas_res.to_pandas().mean(numeric_only=True).to_dict()
+        
+        # 2. Quantitative Retrieval Metrics (Hit Rate, MRR)
+        retrieval_metrics = self.calculate_retrieval_metrics(data_list)
+        
+        # 3. Qualitative Evaluation (LLM Judge)
+        qualitative_metrics = self.run_qualitative_eval(data_list)
+        
+        # Combine all
+        combined_res = {**ragas_dict, **retrieval_metrics}
+        combined_res["qualitative_score"] = qualitative_metrics["qualitative_score"]
+        combined_res["feedbacks"] = qualitative_metrics["feedbacks"]
+        
+        return combined_res
 
 
 def print_cfg(cfg):
@@ -138,8 +244,16 @@ def run_rag_pipeline(evaluator, chain, retriever, questions, ground_truths, cfg)
         
     print(f"--- Evaluating {title} ---")
     res = evaluator.run_eval(results)
-    # Ragas EvaluationResult를 dict 형식으로 안전하게 변환 (평균 점수, 수치 데이터만 계산)
-    return res.to_pandas().mean(numeric_only=True).to_dict()
+    
+    # Print Qualitative Feedbacks for the first few samples
+    print("\n[Qualitative Feedback Samples]")
+    for i, fb in enumerate(res.get("feedbacks", [])[:2]):
+        print(f" Q: {questions[i][:50]}...")
+        print(f" Feedback: {fb}")
+    
+    # Return numerical results only for the final report
+    metrics = {k: v for k, v in res.items() if k != "feedbacks"}
+    return metrics
 
 def main():
     nest_asyncio.apply()
@@ -219,18 +333,12 @@ def main():
     rag = RAGProcessor(file_path, cfg_rag)
     evaluator = RAGEvaluator(llm=rag.llm, embeddings=rag.embedding_model)
 
-    # gpt-4o
-    # {'faithfulness': 0.9333, 'answer_relevancy': 0.4736, 'context_recall': 0.8000, 'context_precision': 0.6917}
-
-    # {'faithfulness': 0.7857, 'answer_relevancy': 0.5961, 'context_recall': 0.8000, 'context_precision': 0.9000}
-
     # 1. Baseline 파이프라인 실행 및 평가
     cfg = {
         "title": "Baseline", 
         "k": 3, 
         "use_multi_query": False,
-        "search_type": "similarity",
-        "search_kwargs": {"k": 3}
+        "search_type": "similarity"
     }
     chain, retriever = rag.get_rag_chain(cfg)
     res = run_rag_pipeline(evaluator, chain, retriever, eval_questions, ground_truths, cfg)
@@ -255,8 +363,7 @@ def main():
     #     "title": "Multi Query", 
     #     "k": 3, 
     #     "use_multi_query": True,
-    #     "search_type": "similarity",
-    #     "search_kwargs": {"k": 3}
+    #     "search_type": "similarity"
     # }
     # chain, retriever = rag.get_rag_chain(cfg)
     # res = run_rag_pipeline(evaluator, chain, retriever, eval_questions, ground_truths, cfg)

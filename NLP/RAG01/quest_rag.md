@@ -1,44 +1,67 @@
-### 기존 프로젝트 (Naive RAG) 개선 과제
+#### RAG 시스템 개선
 
-- 가이드 
+* 개요 : 
+    * RAG(Retrieval-Augmented Generation) 시스템의 성능을 개선한다. 
+    * 성능 지표를 측정한다.
 
-    - 기존 프로젝트 (Naive RAG) vs 개선 적용
-        - Parameter
-        - new module
-        - new pattern
-        - 위 선택지에서 자유롭게 설정
+* 데이터
+    * RAG 시스템 평가를 위한 고난도 데이터셋 (위키백과 '강아지' 기반)
+        * 위피키디아 강아지 (https://ko.wikipedia.org/wiki/%EA%B0%95%EC%95%84%EC%A7%80)
 
-    - 정량평가와 정성평가 적용 하기.
+* 실험 방법
+    * 기존 프로젝트 코드 리팩토링후 config 값 변경하며 결과 확인
 
-- 순서 
-    - 기존 프로젝트 리팩토링 - 완료 
-        - RetrievalQA 구조 -> LCEL 구조
+    * 
+* 평가 항목 
+    * 정량 평가 점수
+        * Faithfulness (충실도) 
+            * 생성된 답변이 검색된 (Context)에 얼마나 기반하고 있는지
+            * '할루시네이션(환각)'이 얼마나 적은가
 
-    - 정량 평가 방법, 정성 평가 방법 적용
-        - 정량 평가 - 
+        * Answer Relevancy (답변 관련성)
+            * 답변이 사용자의 질문 의도에 얼마나 부합하는가
+            * 답변에 불필요한 내용이 너무 많거나, 질문의 핵심을 비껴나갔을 때 점수가 낮아집니다.
+
+        * Answer Similarity (답변 관련성)
+            * 답변이 사용자의 질문 의도에 얼마나 직접적으로 부합하는지 측정.
+
+        * Context Recall (컨텍스트 재현율)
+            * 질문에 답하기 위해 필요한 정보가 검색된 문서 안에 모두 포함되어 있는가
+
+        * Context Precision (컨텍스트 정밀도)
+            * 검색된 결과들 중에서 실제 정답과 관련된 유용한 정보가 상위권에 잘 배치되어 있는가
+            * 검색 엔진이 가져온 문서들 중에 '노이즈(불필요한 정보)'가 섞여 있거나, 정말 중요한 문서가 뒤로 밀려나 있을 때 점수가 깎입니다.
+        
+        * Hit Rate (적중률)
+            * 검색된 N개의 문서 중 정답 문서가 단 하나라도 포함될 확률
+        
+        * MRR (Mean Reciprocal Rank)
+            * 첫 번째 정답 문서가 몇 번째 순위에 나오는지 역수로 계산한 평균값
+            * 1/4이면 평균 4번째 순위에 정답 문서가 나오고 있습니다.3. 종합 평가
+                
+    * 정성 평가 점수 Qualitative Score
+        * LLM이 정해진 척도(예: 1~5점)로 답변의 품질을 종합 점수화
 
 
-    - 이거 저거 적용
-        * 성능 개선: Multi-Query Retriever를 적용한 결과, Context Recall 값이 **0.33에서 1.00으로 비약적으로 향상(200% 개선)
-        * 전체적인 답변의 충실도와 관련성도 모두 상승했습니다. 상세한 비교 수치와 분석 결과는 walkthrough.md에서 확인
+
+## 결과 (Experimental Comparison)
+
+| 실험 ID | LLM / Embedding | Chunk Size / Overlap | k | Multi Query | Search Type |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **실험 1** | gpt-4o-mini / text-3-small | 1000 / 100 | 3 | False | similarity |
+| **실험 2** | gpt-4o-mini / text-3-small | 1000 / 100 | **6** | False | similarity |
+| **실험 3** | gpt-4o-mini / text-3-small | 1000 / 100 | **10** | False | similarity |
+| **실험 4** | gpt-4o-mini / text-3-small | **1500** / 100 | 10 | False | similarity |
+
+| 실험 구분 | Faithfulness | Answer Rel. | Context Recall | Context Precision | Answer Sim. | Hit Rate | MRR | Qual. Score |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **실험 1** | 0.5327 | 0.3449 | 0.2500 | 0.3750 | 0.5754 | 0.6000 | 0.4000 | 3.5 |
+| **실험 2** | 0.5357 | 0.3786 | **0.3500** | 0.3643 | 0.5935 | 0.6000 | 0.3867 | **3.7** |
+| **실험 3** | **0.5545** | 0.3450 | 0.3500 | **0.4333** | 0.5735 | 0.6000 | **0.4500** | 3.7 |
+| **실험 4** | 0.4860 | 0.3566 | 0.3500 | 0.3735 | **0.5893** | 0.6000 | **0.4583** | 3.6 |
 
 
-* 데이터 : 위피키디아 강아지 (https://ko.wikipedia.org/wiki/%EA%B0%95%EC%95%84%EC%A7%80)
 
-* RAG 시스템 : 
-
-* 실험 방법 : 
-
-* 추가 항목 : 정성 평가
-
-    * g-eval, llm-as-a-judgdement
-
-
-성능 최적화 항목 
-
-1. 검색 결과 개수(k) 조정
-설명: 리트리버가 가져오는 문서의 개수(k)를 변경합니다.
-방법: cfg = {"k": 3}에서 k를 1, 5, 10 등으로 바꿔보며 context_recall과 faithfulness의 변화를 확인합니다.
 
 2. 청크 크기(chunk_size) 실험
 설명: 문서를 자르는 단위인 chunk_size를 조정합니다.
