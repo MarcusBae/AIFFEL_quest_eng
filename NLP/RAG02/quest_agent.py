@@ -318,7 +318,7 @@ class ReportAgent:
                 return "response"
             return "tools"
 
-        builder.add_conditional_edges(
+        builder. (
                 "select", 
                 route_after_select, 
                 {"tools": "tools", "response": "response"})
@@ -370,7 +370,7 @@ if __name__ == "__main__":
             configurable={"thread_id": thread_id}
                         # thread_id: 특정 대화 세션을 식별하는 고유 번호, checkpoint에서 load 
     )
-    print("-" * 30)
+    print("-" * 30)     
     agent.streaming("1+1 은?", config)
 
     # print("-" * 30)
