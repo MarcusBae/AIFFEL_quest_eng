@@ -16,7 +16,8 @@
 
 ### 2.1. 전체 시스템 다이어그램
 
-![Local LLM Coding Agent Architecture](image_0.png)
+<img src="image-2.png" style="width: 40%;">
+
 
 ### 2.2. 핵심 구성 요소
 
