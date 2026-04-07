@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+streamlit
+httpx
+python-multipart
+pydantic
